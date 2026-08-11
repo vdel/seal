@@ -1,0 +1,68 @@
+#!/bin/sh
+# What starts this group. Seal runs it once for the whole group, from
+# the repository root, as `<runner_args...> -- <epic>/<outcome> ...`, and
+# reads the verdicts off what it prints (see
+# /rfcs/0014-seal-on-seal.md and /docs/guides/runners.md).
+#
+# Every promise here is about Seal itself, so what each one runs is an
+# ordinary program: `check`, executable, in the outcome's own directory. That
+# is the same convention this file is found by -- what a group declares is
+# its structure, so a path named in a config as well would be two places to
+# keep in agreement (/rfcs/0002-declaration-by-structure.md).
+#
+# A promise nobody has written a `check` for yet is reported `# TODO`, which
+# Seal reads as no verdict. Not `ok`, which would be this runner
+# claiming a promise was kept by nobody testing it, and not `not ok`, which
+# would be a failure nothing established.
+#
+# A `check` that ran and found the machine missing what its promise needs --
+# a container runtime, a cluster -- is the same state and reported the same
+# way. It says so by exiting with the status below, which is far enough from
+# the codes a program exits by accident (1 for a failed assertion, 128+n for
+# a signal) that a crash is never read as "there was nothing to run against".
+CANNOT_RUN=99
+
+set -u
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+# This runner takes no arguments of its own yet; skipping to the separator
+# anyway is what keeps that from being a change when it does.
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
+[ "${1:-}" = "--" ] && shift
+
+echo "1..$#"
+
+number=0
+for slug in "$@"; do
+  number=$((number + 1))
+  check="$here/$slug/check"
+  if [ ! -x "$check" ]; then
+    echo "not ok $number - $slug # TODO no test yet"
+    continue
+  fi
+  "$check"
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    echo "ok $number - $slug"
+  elif [ "$status" -eq "$CANNOT_RUN" ]; then
+    echo "not ok $number - $slug # TODO could not run here"
+  else
+    echo "not ok $number - $slug"
+  fi
+done
+
+# What one check learned about this machine is not carried into the next
+# run: a machine that could not host a cluster an hour ago may be one that
+# can now, and a suite that never asked again would keep reporting no
+# verdict for a promise it could establish (see helpers/cluster.py).
+rm -f "${TMPDIR:-/tmp}/seal-outcomes-no-cluster"
+
+# What this run created, and only that. A check that needed a cluster and
+# found none makes one under a name no person's own cluster carries (see
+# helpers/cluster.py), so deleting that name takes away what this run
+# brought and never what somebody was already using. Best-effort: a run
+# where nothing needed a cluster has nothing here to delete.
+if command -v ctlptl >/dev/null 2>&1; then
+  ctlptl delete cluster kind-seal-outcomes >/dev/null 2>&1 || true
+fi

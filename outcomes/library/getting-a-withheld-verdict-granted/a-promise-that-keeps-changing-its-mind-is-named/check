@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+The report this promise is about lives under `seal outcomes`'s bare
+listing (`_report_unsettled` in seal.py), which reads
+`recorded_verdicts()` off `.workspace/seal/outcome-history.jsonl` (see
+outcome_history.py) and names a promise whose last several states include a
+change of verdict -- a rate, via `flips()`, never a conclusion.
+
+Nothing here starts an agent or simulates one trying to fix anything: what
+would actually make a promise flip is an agent's business, and this checks
+only the reporting a checkout can establish on its own. So the fixture is
+built by hand -- a real outcome tree, discovered the ordinary way, paired
+with a history file written directly in the exact JSON Lines shape a real
+run leaves (`outcome`, `state`, `confirmation`, `at`, `run`, `scope`,
+`quarantined`). No cluster, no session: the command under test reads a
+tree and a log file and says what it found.
+
+Two promises, because the prompt's own contrast needs both in the same
+suite to mean anything: one whose recorded state changes from run to run
+with nothing having decided which it is, and one that has simply been red
+every time -- which the prompt is explicit is a different thing, and one
+this report must not call out as if it were the first.
+
+What this reading chose, where the prompt left it open:
+
+- **`seal outcomes` (no arguments)**, since that is where this report
+  actually surfaces -- under the tree's own listing, not as a command of
+  its own. `recorded_verdicts()` reads every entry regardless of what a run
+  called its scope, so no `--all` or whole-suite framing is needed here;
+  what matters is only that the promise exists in the tree so the listing
+  reaches it at all.
+- **The flip count and run count are both asserted**, not merely that a
+  line exists, because "1 change(s) of verdict in 1 run(s)" would satisfy a
+  test that only checked for the promise's name.
+
+Deliberately not asserted, because the prompt withholds it: that the
+flipping promise's test is at fault, that the application is intermittent,
+or that there is a threshold past which a rate becomes a problem -- the
+prompt is explicit that none of those is this report's to conclude.
+"""
+
+import json
+import sys
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, check, expect, project  # noqa: E402
+
+KEPT = "#!/bin/sh\nexit 0\n"
+ALWAYS_FAILS = "#!/bin/sh\nexit 1\n"
+
+FAIL = "FAIL"
+PASS = "PASS"
+BASE = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+
+def _entry(fixture, run_id: str, at: datetime, slug: str, state: str) -> None:
+    """One line of the history file, in exactly the shape a real run leaves
+    (outcome_history.record()). `recorded_verdicts()` reads every entry
+    regardless of scope, so this does not need to carry a whole-suite run --
+    only what each promise's own verdict was, in order."""
+    path = fixture.root / ".workspace" / "seal" / "outcome-history.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as history:
+        history.write(
+            json.dumps(
+                {
+                    "outcome": slug,
+                    "state": state,
+                    "confirmation": None,
+                    "at": at.isoformat(),
+                    "run": run_id,
+                    "scope": "tree",
+                    "quarantined": False,
+                }
+            )
+            + "\n"
+        )
+
+
+def body() -> None:
+    flipping = "cli/gating/flip-flops"
+    steady = "cli/gating/steady-fail"
+    kept = "cli/gating/steady-pass"
+
+    with project("changing-its-mind") as fixture:
+        fixture.group("cli")
+        fixture.promise("cli", "gating", "flip-flops", translation={"check": KEPT})
+        fixture.promise("cli", "gating", "steady-fail", translation={"check": ALWAYS_FAILS})
+        fixture.promise("cli", "gating", "steady-pass", translation={"check": KEPT})
+
+        # Four runs: red, green, red, green -- three changes of verdict, on
+        # its own timeline of runs so the fixture reads as an ordinary
+        # history rather than four calls that happen to share a clock.
+        states = [FAIL, PASS, FAIL, PASS]
+        for offset, state in enumerate(states):
+            run_id = uuid.uuid4().hex
+            at = BASE + timedelta(minutes=offset)
+            _entry(fixture, run_id, at, flipping, state)
+            _entry(fixture, run_id, at, steady, FAIL)
+            _entry(fixture, run_id, at, kept, PASS)
+
+        listing = seal("outcomes", cwd=fixture.root)
+        expect(
+            listing.status == 0,
+            f"the listing itself is not a verdict on anything:\n{listing}",
+        )
+
+        changing_lines = [
+            line for line in listing.output.splitlines() if "change(s) of verdict" in line
+        ]
+        expect(
+            len(changing_lines) == 1,
+            "exactly one promise is named as changing its mind -- the one that "
+            f"actually flipped:\n{listing}",
+        )
+        expect(
+            changing_lines[0].strip()
+            == f"{flipping}: 3 change(s) of verdict in 4 run(s)",
+            f"and it is named with how often, over how many runs:\n{listing}",
+        )
+        expect(
+            steady not in changing_lines[0] and kept not in changing_lines[0],
+            f"a steadily red promise and a steadily kept one are not swept in:\n{listing}",
+        )
+        expect(
+            "Changing their mind" in listing.output,
+            f"the section itself is introduced, not just the one line:\n{listing}",
+        )
+
+
+check(body)

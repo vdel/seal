@@ -1,0 +1,425 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+The promise is that a run's manifest shape (`--k8s_overlay`), its kind of
+image (`--build_type`), whether it publishes (`--publish_images`) and which
+credentials resolve (`--credentials_env`) are four independent inputs: fixing
+three and varying the fourth changes only what that fourth one is documented
+to touch.
+
+Where each decision is actually made, and how this reading reaches it:
+
+- **Shape, image kind, and publishing** are resolved entirely while Tilt
+  loads the project's Tiltfile -- before an image is built or anything is
+  deployed (`select_k8s_overlay()` picks the overlay, `seal_service()`
+  picks the Dockerfile stage, and the project's own Tiltfile decides what
+  `publish_images` means by calling `default_registry()` or not, the same
+  way examples/angular-django's own Tiltfile does). `tilt alpha
+  tiltfile-result` is Tilt's own dry run of exactly that resolution, so this
+  reading uses it directly rather than through `helpers.deployed()`: paying
+  for a build and a cluster would establish nothing this promise is about,
+  and this machine has no container runtime to pay with anyway.
+- **Which credentials resolve** is decided one layer further in, by the
+  `seal` CLI itself, before it hands off to `tilt ci`
+  (`_fill_declared_objects()` in seal.py, the same mechanism the
+  `a-container-never-starts-without-the-values-it-needs` check reads
+  statically). `tilt alpha tiltfile-result` never reaches that code at all,
+  so this half runs the real `seal ci` and reads the Secret patch it
+  writes under `.workspace/seal-env/<overlay>/` -- what happens to
+  `tilt ci` after that point is never asserted on, only the file left
+  behind before it. Where a cluster exists this run actually deploys, so
+  the fixture's container carries a readiness probe that passes the moment
+  it starts (an `exec` probe on `true`, never the shape a real service
+  would use) -- the point is for `tilt ci` to return quickly either way,
+  not to wait on a promise this check does not ask about. What it deployed
+  is torn down again before the next assertion, the same discipline
+  `helpers.deployed()` gives the checks that use it.
+- **"Building the kind of image a real environment runs does not stop the
+  promises being checked"** (the prompt's second bullet) is read through the
+  one piece of that wiring `tilt alpha tiltfile-result` can also show
+  without a cluster: a service's baseline-reset resource arms
+  (`trigger_mode`/`auto_init`) exactly when this run is a gate
+  (`SEAL_CI`, which `seal ci` always sets), never off
+  `build_type` -- the same Starlark value (`run_outcomes` in
+  config.Tiltfile) the outcome suite itself is gated by. Demonstrating this
+  through an actual outcome run would need a container group and a
+  container runtime this machine does not have; this is the closest static
+  proxy to the same computation.
+
+Deliberately not asserted, because the prompt withholds it: which
+combinations of the four are sensible (none are refused, however odd), and
+anything about a real deployment -- whether the run in the fourth section
+reaches a cluster or not is a fact about this machine, not about the
+promise, and only what `seal` itself decided before handing off to
+`tilt ci` is read.
+"""
+
+import base64
+import json
+import os
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import Failed, Project, seal, cannot_run, check, expect, kubectl, project  # noqa: E402
+from helpers.projects import container, deployment  # noqa: E402
+
+DOCKERFILE = """FROM busybox:1.36 AS development
+CMD ["sleep", "3600"]
+
+FROM busybox:1.36 AS runtime
+CMD ["sleep", "3600"]
+"""
+
+# A store this check brings itself (see
+# credentials/whatever-shape-my-password-managers-cli-takes-i-declare-it):
+# dumps a scope, keyed by item, so which one comes back depends only on
+# --credentials_env.
+FETCH_CLI = """#!/bin/sh
+scope=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --scope) scope="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf 'the-token=from-scope-%s\\n' "$scope"
+"""
+
+RESET_SCRIPT = "#!/bin/sh\ntrue\n"
+
+# The fixture's container does nothing but sleep -- what serves is not what
+# the fourth section is about. An `exec` probe that is already true the
+# moment the process starts is what lets a run against a real cluster
+# deploy and return quickly, the same way the reset script above does
+# nothing real either: neither is what this promise turns on.
+INSTANTLY_READY = {"exec": {"command": ["/bin/true"]}, "periodSeconds": 1, "failureThreshold": 5}
+
+
+def a_project_with_four_decisions(fixture: Project) -> None:
+    """A project where the four decisions are visibly different from one
+    another: two overlays of different shape, a Dockerfile with a stage per
+    build_type, a root Tiltfile that reads `publish_images` the way a
+    project's own does, and a credential that resolves differently per
+    environment."""
+    fixture.tiltfile()
+    fixture.service("api", env="TOKEN=creds://the-token\n")
+    fixture.deploys(
+        "api",
+        DOCKERFILE,
+        containers=[
+            container("api", image="api", probe=False)
+            | {"readinessProbe": INSTANTLY_READY, "envFrom": [{"secretRef": {"name": "api-values"}}]}
+        ],
+        overlay="dev",
+        development_stage="development",
+        runtime_stage="runtime",
+        reset="reset.sh",
+    )
+    fixture.write("services/api/reset.sh", RESET_SCRIPT, executable=True)
+    fixture.manifest(
+        "dev",
+        "api-values",
+        {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": "api-values",
+                "annotations": {"seal-test.dev/fill-from": "api"},
+            },
+            "type": "Opaque",
+        },
+    )
+
+    # A second shape: same service, a Deployment that plainly differs (three
+    # replicas rather than one) so a run naming it is unmistakably deploying
+    # something else -- not a shape this promise has any opinion about being
+    # sensible, just one a check can tell apart from the first.
+    other_deployment = deployment(
+        "api",
+        [
+            container("api", image="api", probe=False)
+            | {"readinessProbe": INSTANTLY_READY, "envFrom": [{"secretRef": {"name": "api-values"}}]}
+        ],
+    )
+    other_deployment["spec"]["replicas"] = 3
+    fixture.manifest("prod-like", "api", other_deployment)
+    fixture.manifest(
+        "prod-like",
+        "api-values",
+        {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": "api-values",
+                "annotations": {"seal-test.dev/fill-from": "api"},
+            },
+            "type": "Opaque",
+        },
+    )
+
+    cli = fixture.write("bin/creds-cli", FETCH_CLI, executable=True)
+    fixture.write(
+        "seal-credentials-config.json",
+        json.dumps(
+            {
+                "default_env": "dev",
+                "provider": [
+                    {
+                        "scheme": "creds://",
+                        "name": "a fake store",
+                        "cli": str(cli),
+                        "form": "fetch",
+                        "command": [str(cli), "--scope", "{scope}"],
+                        "environments": {
+                            "dev": {"scope": "dev-scope"},
+                            "prod": {"scope": "prod-scope"},
+                        },
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+    )
+
+    # The root Tiltfile a project actually writes: `publish_images` is a
+    # value the project reads and decides what to do with (here,
+    # `default_registry()`), the same wiring examples/angular-django uses --
+    # seal never pushes anything on its own account.
+    fixture.write(
+        "Tiltfile",
+        "v1alpha1.extension_repo(name='seal', url='file://{}')\n".format(
+            Path(__file__).resolve().parents[4]
+        )
+        + "v1alpha1.extension(name='seal', repo_name='seal', "
+        "repo_path='tilt/seal')\n\n"
+        + "load('ext://seal', 'select_k8s_overlay', 'publish_images')\n\n"
+        + "include('services/api/Tiltfile')\n\n"
+        + "if publish_images:\n"
+        + "    default_registry('registry.invalid')\n\n"
+        + "select_k8s_overlay(k8s_dir='k8s', default_overlay='dev')\n",
+    )
+
+
+def _bin_path_env(fixture: Project, **extra: str) -> dict[str, str]:
+    return {"PATH": f"{fixture.root / 'bin'}{os.pathsep}{os.environ['PATH']}", **extra}
+
+
+def _tiltfile_result(fixture: Project, overlay: str, build_type: str, publish: bool,
+                      gate: bool = False) -> dict:
+    """Tilt's own dry run of what a project resolves to for this run --
+    every manifest, its images and their build targets, and whether a
+    registry is configured -- without building or deploying anything."""
+    env = _bin_path_env(fixture)
+    if gate:
+        env["SEAL_CI"] = "1"
+    completed = subprocess.run(
+        [
+            "tilt", "alpha", "tiltfile-result", "-f", "Tiltfile", "--",
+            "--k8s_overlay", overlay,
+            "--build_type", build_type,
+            f"--publish_images={'true' if publish else 'false'}",
+        ],
+        cwd=fixture.root, capture_output=True, text=True, timeout=120, env=env,
+    )
+    expect(
+        completed.returncode == 0,
+        f"tilt resolves this project's config for k8s_overlay={overlay!r} "
+        f"build_type={build_type!r} publish_images={publish!r}:\n"
+        f"{completed.stdout}{completed.stderr}",
+    )
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise Failed(
+            f"tilt alpha tiltfile-result printed something other than JSON: {error}\n"
+            f"{completed.stdout}{completed.stderr}"
+        ) from error
+
+
+@dataclass(frozen=True)
+class Resolved:
+    deploy_yaml: str
+    image_target: str | None
+    registry: dict | None
+    reset_trigger_mode: int | None
+
+
+def _resolved(fixture: Project, overlay: str, build_type: str, publish: bool,
+              gate: bool = False) -> Resolved:
+    result = _tiltfile_result(fixture, overlay, build_type, publish, gate=gate)
+    manifests = {manifest["Name"]: manifest for manifest in result["Manifests"]}
+    expect("api" in manifests, f"tilt resolved an 'api' manifest:\n{json.dumps(result)[:2000]}")
+    api = manifests["api"]
+    return Resolved(
+        deploy_yaml=api["DeployTarget"]["yaml"],
+        image_target=(api.get("ImageTargets") or [{}])[0].get("BuildDetails", {}).get("target"),
+        registry=result.get("DefaultRegistry"),
+        reset_trigger_mode=(manifests.get("seal_reset_api") or {}).get("TriggerMode"),
+    )
+
+
+def _resolved_token(fixture: Project, overlay: str) -> str:
+    path = fixture.root / ".workspace" / "seal-env" / overlay / "secret-api-values.yaml"
+    expect(path.is_file(), f"seal ci filled overlay {overlay!r} before it deployed anything:\n{path}")
+    text = path.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("TOKEN:"):
+            return base64.b64decode(stripped.split(":", 1)[1].strip()).decode("utf-8")
+    raise Failed(f"no TOKEN key in the filled patch for overlay {overlay!r}:\n{text}")
+
+
+def body() -> None:
+    for tool, why in (
+        ("tilt", "this promise is read off what `tilt` resolves a project's own "
+                  "Tiltfile to"),
+        ("rsync", "loading any Tiltfile that declares a service checks for it, "
+                   "whether or not this project's own tests use it"),
+    ):
+        if shutil.which(tool) is None:
+            cannot_run(f"{tool} is not on PATH, and {why}")
+
+    with project("four-decisions") as fixture:
+        a_project_with_four_decisions(fixture)
+
+        baseline = _resolved(fixture, "dev", "development", publish=False)
+
+        # 1. The manifest shape: a different overlay changes what deploys,
+        # and nothing else about this run.
+        other_shape = _resolved(fixture, "prod-like", "development", publish=False)
+        expect(
+            other_shape.deploy_yaml != baseline.deploy_yaml,
+            "selecting a different overlay changes what would deploy:\n"
+            f"dev:\n{baseline.deploy_yaml}\nprod-like:\n{other_shape.deploy_yaml}",
+        )
+        expect(
+            other_shape.image_target == baseline.image_target,
+            f"...without changing which image kind gets built (dev built "
+            f"{baseline.image_target!r}, prod-like built {other_shape.image_target!r})",
+        )
+        expect(
+            other_shape.registry == baseline.registry == None,
+            "...and without turning publishing on",
+        )
+
+        # 2. The kind of image: a different build_type changes which
+        # Dockerfile stage is built, and nothing else.
+        other_build = _resolved(fixture, "dev", "runtime", publish=False)
+        expect(
+            other_build.image_target != baseline.image_target,
+            f"a different build_type builds a different image stage (development "
+            f"built {baseline.image_target!r}, runtime built {other_build.image_target!r})",
+        )
+        expect(
+            other_build.deploy_yaml == baseline.deploy_yaml,
+            "...without changing which shape this run deploys",
+        )
+        expect(other_build.registry == baseline.registry, "...or turning publishing on")
+
+        # 3. Whether images are published: turning it on changes the
+        # registry the project's own Tiltfile configures for it, and
+        # nothing about which shape or which image kind this run builds.
+        published = _resolved(fixture, "dev", "development", publish=True)
+        expect(
+            baseline.registry is None and published.registry is not None,
+            f"publish_images turns on the registry the project names for it "
+            f"(off: {baseline.registry!r}, on: {published.registry!r})",
+        )
+        expect(
+            published.image_target == baseline.image_target,
+            "...without changing which image kind gets built",
+        )
+        expect(
+            published.deploy_yaml == baseline.deploy_yaml,
+            "...or which shape this run deploys",
+        )
+
+        # The prompt's own second bullet: a run against the images a real
+        # environment runs is still a gate. Whether the baseline that
+        # precedes the promises is armed follows only whether this run is a
+        # gate (SEAL_CI, which `seal ci` always sets) -- never
+        # build_type.
+        manual_development = _resolved(fixture, "dev", "development", publish=False, gate=False)
+        manual_runtime = _resolved(fixture, "dev", "runtime", publish=False, gate=False)
+        gated_development = _resolved(fixture, "dev", "development", publish=False, gate=True)
+        gated_runtime = _resolved(fixture, "dev", "runtime", publish=False, gate=True)
+        expect(
+            manual_development.reset_trigger_mode == manual_runtime.reset_trigger_mode,
+            "a session that is not a gate leaves the baseline manual whichever image "
+            f"kind it built (development: {manual_development.reset_trigger_mode}, "
+            f"runtime: {manual_runtime.reset_trigger_mode})",
+        )
+        expect(
+            gated_development.reset_trigger_mode == gated_runtime.reset_trigger_mode,
+            "a gate arms the baseline whichever image kind it built (development: "
+            f"{gated_development.reset_trigger_mode}, runtime: "
+            f"{gated_runtime.reset_trigger_mode})",
+        )
+        expect(
+            manual_development.reset_trigger_mode != gated_development.reset_trigger_mode,
+            "and being a gate is what makes the difference, not the image kind",
+        )
+
+        # 4. Which credentials resolve: a run's own CLI resolves every
+        # overlay's values before it hands off to `tilt ci` -- reached
+        # through `seal ci` itself rather than `tilt alpha
+        # tiltfile-result`, which never runs that step. Where a cluster
+        # exists this run actually deploys (the fixture's readiness probe is
+        # built to pass at once, see INSTANTLY_READY above), so what it puts
+        # in the cluster is torn down again once this section is done --
+        # only the patch left behind before `tilt ci` started is asserted on.
+        env = _bin_path_env(fixture)
+        try:
+            seal(
+                "ci", "--credentials_env", "dev", "--",
+                "--k8s_overlay", "dev", "--build_type", "development",
+                cwd=fixture.root, env=env, timeout=120,
+            )
+            as_dev = _resolved_token(fixture, "dev")
+            as_dev_other_overlay = _resolved_token(fixture, "prod-like")
+            expect(
+                as_dev == as_dev_other_overlay,
+                "which store resolves does not depend on which shape this run deploys -- "
+                f"every overlay's objects are filled the same way (dev: {as_dev!r}, "
+                f"prod-like: {as_dev_other_overlay!r})",
+            )
+
+            # A second run naming a different environment, and -- at the same
+            # time -- a different shape, image kind and publish setting: if any
+            # of those three secretly picked the store, this would read back the
+            # first run's value instead of the second's.
+            seal(
+                "ci", "--credentials_env", "prod", "--",
+                "--k8s_overlay", "prod-like", "--build_type", "runtime",
+                "--publish_images=true",
+                cwd=fixture.root, env=env, timeout=120,
+            )
+            as_prod = _resolved_token(fixture, "dev")
+            expect(
+                as_prod != as_dev,
+                f"a different --credentials_env reads a different store (dev: {as_dev!r}, "
+                f"prod: {as_prod!r})",
+            )
+            expect(
+                _resolved_token(fixture, "prod-like") == as_prod,
+                "and the other three did not quietly change which one did",
+            )
+        finally:
+            # Deleted through the same overlays that may have deployed them,
+            # the same discipline helpers.deployed() gives the checks that
+            # use it -- a fixture that leaves nothing behind whether or not
+            # a cluster was actually there to deploy into.
+            for overlay in ("dev", "prod-like"):
+                kubectl(
+                    "delete", "-k", str(fixture.root / "k8s" / overlay),
+                    "--ignore-not-found", timeout=300,
+                )
+
+
+check(body)

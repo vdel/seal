@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: example-api
+        image: example-api
+        imagePullPolicy: IfNotPresent
+        # DJANGO_SECRET_KEY / DEBUG are injected from services/api/.env,
+        # which seal fills into the object this overlay declares and
+        # annotates (api/secrets.yaml). Which object carries
+        # which key is the overlay's own statement, not seal's:
+        # k8s/non-dev splits them across a ConfigMap and a Secret, and
+        # repoints this container at both. See /docs/credentials.md.
+        envFrom:
+        - secretRef:
+            name: example-api-secrets
+        # DATABASE_URL / CELERY_* are marked `k8s://` in services/api/.env:
+        # they point at the postgres/valkey Services bundled in this same
+        # overlay (k8s/dev/postgres, k8s/dev/valkey), so they're set here
+        # directly rather than resolved from a service's own .env.
+        #
+        # POSTGRES_USER/PASSWORD/DB come from the dummy dev Secret
+        # (k8s/dev/postgres/secret.yaml) rather than being hardcoded here,
+        # and DATABASE_URL is assembled from them via k8s's own $(VAR)
+        # expansion -- the same shape a real environment overrides this
+        # with, pointed at the Secret for the Postgres provisioned there
+        # instead.
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgresql
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgresql
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: postgresql
+              key: POSTGRES_DB
+        - name: DATABASE_URL
+          value: postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)
+        - name: CELERY_BROKER_URL
+          value: redis://valkey:6379/0
+        - name: CELERY_RESULT_BACKEND
+          value: redis://valkey:6379/0
+        ports:
+        - containerPort: 8888
+        readinessProbe:
+          httpGet:
+            # Through nginx, so port 8000 (not 8888): / is routed to the ui
+            # container (see k8s/dev/web/nginx/nginx-config.yaml), so this
+            # must hit /api/ to actually probe this container.
+            path: /api/
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 3
+          timeoutSeconds: 3
+          failureThreshold: 10
+        livenessProbe:
+          httpGet:
+            path: /api/
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        # resources:
+        #   requests:
+        #     memory: "500Mi"
+        #     cpu: "200m"
+        #   limits:
+        #     memory: "2Gi"
+        #     cpu: "500m"

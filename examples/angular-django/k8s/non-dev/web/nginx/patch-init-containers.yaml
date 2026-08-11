@@ -1,0 +1,52 @@
+# How the browser gets its static files when nothing is running `ng serve`.
+#
+# The dev overlay puts an `example-ui` container in this pod running Angular's
+# dev server, and nginx proxies to it. Here the ui image's `runtime` stage
+# carries the built bundle and nothing else (see services/ui/Dockerfile), so
+# it runs as an initContainer that copies the bundle into a volume and exits,
+# and nginx serves it directly.
+#
+# That is what makes this shape worth verifying separately rather than
+# assuming dev's verdict carries over: an outcome test here exercises real
+# production concerns -- whether the built bundle is complete, and whether
+# nginx's SPA fallback routes a reloaded deep link -- that a dev server hides
+# by rebuilding and routing everything itself.
+#
+# Lists merge by key (containers and volumes by `name`, volumeMounts by
+# `mountPath`), so each entry below only has to name what it changes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  template:
+    spec:
+      initContainers:
+      # Named for the image it runs, which is how Tilt finds what to inject:
+      # it matches a manifest by the `image:` selector a service built (see
+      # k8s/README.md), initContainer or not.
+      #
+      # No readinessProbe, and none to give: this runs to completion before
+      # the pod's containers start, which is exactly the ordering the static
+      # files need -- nginx cannot come up ready over an empty directory.
+      - name: example-ui
+        image: example-ui
+        imagePullPolicy: IfNotPresent
+        command: ["cp", "-R", "/app/static/ui/.", "/static"]
+        volumeMounts:
+        - name: ui-static
+          mountPath: /static
+      containers:
+      # Deleted rather than left running: with the bundle already on disk
+      # there is nothing for a dev server to serve, and a second process
+      # answering on 4200 would leave it ambiguous which of the two a passing
+      # test had exercised.
+      - name: example-ui
+        $patch: delete
+      - name: nginx
+        volumeMounts:
+        - name: ui-static
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: ui-static
+        emptyDir: {}

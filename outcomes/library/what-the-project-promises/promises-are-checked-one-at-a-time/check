@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+Two promises that would interfere do not run together, because each drives
+the same application. This is asserted across two groups -- a `tap` group is
+one subprocess for its whole run (see /rfcs/0014-seal-on-seal.md), so
+interference between two outcomes inside one group is a fact about that
+group's own script, not about seal's dispatch. Two groups is where
+seal itself decides whether one waits for the other.
+
+The fixture makes the interference observable without asserting on how long
+anything takes, which is what the prompt withholds:
+
+- **A lock, held for the length of one promise's run.** Group `aaa`'s
+  promise takes the lock, holds it briefly, then releases it and leaves a
+  marker behind before reporting. Group `bbb`'s promise checks, when it
+  runs, that the lock is not held -- which only holds if `aaa`'s run had
+  already finished before `bbb`'s started.
+- **The marker is what shows the second half of the promise**: each promise
+  starts from whatever the one before it left, so `bbb`'s promise also
+  checks that `aaa`'s marker is already there -- not because ordering
+  between groups is itself promised (it isn't; the prompt says nothing about
+  it), but because a marker `bbb` can see at all is only there because state
+  is not reset between them.
+- **The hold is brief and fixed, deliberately** -- not a poll, because there
+  is no state to poll for on the other side of a promise that has not
+  started yet. It exists only to widen the window in which two promises
+  running at once would be caught, which is different from waiting on the
+  clock for a result to become true.
+
+What this reading chose: two `tap` groups rather than two outcomes in one,
+since that is the shape where serialising them is seal's decision
+rather than a script's own loop, and named `aaa`/`bbb` so their order in the
+tree is exactly the order this asserts on.
+
+Deliberately not asserted, because the prompt withholds it: anything about
+how long the run takes, and that promises are isolated from each other --
+the marker file is evidence of the opposite, on purpose.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, check, expect, project  # noqa: E402
+
+# Takes a lock, holds it briefly, leaves a marker, releases the lock, then
+# reports. The hold is what gives an interference the chance to be caught if
+# groups ran together; the marker is what a promise run after this one would
+# find left behind.
+HOLDS_A_LOCK = """#!/bin/sh
+set -u
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
+[ "${1:-}" = "--" ] && shift
+echo "1..$#"
+number=0
+for slug in "$@"; do
+  number=$((number + 1))
+  touch .outcome-lock
+  sleep 0.5
+  echo "left by aaa" > .aaa-left-this
+  rm -f .outcome-lock
+  echo "ok $number - $slug"
+done
+"""
+
+# Fails if the other group's lock is still held, or if it never left
+# anything behind -- either is only possible if the two ran together, or if
+# this one started from a clean slate rather than what the other left.
+CHECKS_THE_LOCK = """#!/bin/sh
+set -u
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
+[ "${1:-}" = "--" ] && shift
+echo "1..$#"
+number=0
+for slug in "$@"; do
+  number=$((number + 1))
+  if [ -e .outcome-lock ]; then
+    echo "not ok $number - $slug # aaa's lock was still held"
+  elif [ ! -e .aaa-left-this ]; then
+    echo "not ok $number - $slug # aaa had not left anything behind yet"
+  else
+    echo "ok $number - $slug"
+  fi
+done
+"""
+
+
+def line_about(run, slug: str) -> str:
+    lines = [line for line in run.output.splitlines() if line.startswith(f"{slug} ")]
+    return lines[0] if lines else ""
+
+
+def body() -> None:
+    with project("serialized") as fixture:
+        fixture.tiltfile().service("api", env="GREETING=hello\n")
+        fixture.deployment("api")
+        fixture.codeowners("/outcomes/ @owner\n")
+        fixture.group("aaa", run=HOLDS_A_LOCK)
+        fixture.group("bbb", run=CHECKS_THE_LOCK)
+        # The translation is a marker only -- what actually drives each
+        # promise is the group's own `run` script above, which decides on
+        # its own terms what a slug means. A `tap` outcome only needs a file
+        # of its own to count as translated at all.
+        driven_by_the_group = {
+            "translated.md": "Driven by this group's own `run` script; see outcomes/<group>/run.\n"
+        }
+        fixture.promise(
+            "aaa", "gating", "first", prompt="# aaa's own promise\n", translation=driven_by_the_group
+        )
+        fixture.promise(
+            "bbb", "gating", "second", prompt="# bbb's own promise\n", translation=driven_by_the_group
+        )
+
+        run = seal("outcomes", "run", "--all", cwd=fixture.root)
+        expect(
+            run.status == 0,
+            f"two promises in different groups do not interfere with each other:\n{run}",
+        )
+        expect(
+            "PASS" in line_about(run, "aaa/gating/first"),
+            f"the first promise runs and is reported kept:\n{run}",
+        )
+        expect(
+            "PASS" in line_about(run, "bbb/gating/second"),
+            "the second finds the lock released and what the first left behind -- "
+            f"it started only once the first had finished:\n{run}",
+        )
+
+
+check(body)

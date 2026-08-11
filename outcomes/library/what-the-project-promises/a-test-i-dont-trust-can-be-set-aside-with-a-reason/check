@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+A translation nobody trusts yet -- one that doesn't own the data it asserts
+on, or isn't deterministic -- can be set aside with a written reason so its
+failure stops gating every merge while somebody fixes it. What this checks
+is the mechanism, not the judgement behind using it: a promise is built that
+fails, quarantined, and read back through every stage the prompt names.
+
+What this reading chose, where the prompt left it open:
+
+- **One promise that always fails, kept beside one that always passes.**
+  Quarantining "unstable" has to leave "kept" reported exactly as it always
+  was -- setting one promise aside is not a lever for the rest of the suite.
+- **The refusal is checked with an empty file**, which is the shape
+  `seal check` itself treats as "no reason": a quarantine that is there
+  but says nothing reads the same as no file at all, so a quarantine with
+  nothing written in it is the one to exercise.
+- **Before and after are both asserted.** The failure fails the run on its
+  own first, so what quarantining changed is visible rather than assumed --
+  a check that only ever built the quarantined shape could not tell "this
+  promise is excused" from "this promise was never going to fail".
+
+Deliberately not asserted, because the prompt withholds it: that setting a
+test aside is free -- it needs a code owner's approval the same as any other
+change here, which is what CODEOWNERS over the tree already establishes and
+what this check is not about -- and that a quarantined test is fixed, or
+ever will be.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, check, expect, project  # noqa: E402
+
+KEPT = "#!/bin/sh\nexit 0\n"
+ALWAYS_FAILS = "#!/bin/sh\necho 'the delete button races the list re-render' >&2\nexit 1\n"
+
+
+def line_about(run, promise: str) -> str:
+    lines = [
+        line
+        for line in run.output.splitlines()
+        if line.startswith(f"cli/gating/{promise} ")
+    ]
+    return lines[0] if lines else ""
+
+
+def body() -> None:
+    with project("quarantine") as fixture:
+        fixture.tiltfile().service("api", env="GREETING=hello\n")
+        fixture.deployment("api")
+        fixture.codeowners("/outcomes/ @owner\n")
+        fixture.group("cli")
+        fixture.promise("cli", "gating", "kept", translation={"check": KEPT})
+        fixture.promise("cli", "gating", "unstable", translation={"check": ALWAYS_FAILS})
+
+        # Before anything is set aside, the failure is a failure like any
+        # other: it fails the run, and is reported as having failed.
+        red = seal("outcomes", "run", "--all", cwd=fixture.root)
+        expect(
+            red.status != 0,
+            f"an untrusted test's failure fails the run before it is set aside:\n{red}",
+        )
+        expect(
+            "FAIL" in line_about(red, "unstable"),
+            f"and is reported as having failed:\n{red}",
+        )
+
+        # A quarantine with no reason is refused.
+        fixture.write("outcomes/cli/gating/unstable/quarantine.md", "")
+        refused = seal("check", cwd=fixture.root)
+        expect(
+            refused.status != 0,
+            f"setting a promise aside without a reason is refused:\n{refused}",
+        )
+        expect(
+            "quarantined with no reason" in refused.output,
+            f"and says why, rather than accepting it quietly:\n{refused}",
+        )
+
+        # With a stated reason, the same file is accepted.
+        fixture.write(
+            "outcomes/cli/gating/unstable/quarantine.md",
+            "The delete button races the list re-render, so this fails about one run in "
+            "five on a loaded runner. Being rewritten to wait on the row disappearing.\n",
+        )
+        accepted = seal("check", cwd=fixture.root)
+        expect(
+            accepted.status == 0,
+            f"a quarantine with a stated reason is accepted:\n{accepted}",
+        )
+
+        quarantined_run = seal("outcomes", "run", "--all", cwd=fixture.root)
+        expect(
+            quarantined_run.status == 0,
+            f"a set-aside promise's failure does not fail the run:\n{quarantined_run}",
+        )
+        line = line_about(quarantined_run, "unstable")
+        expect(
+            "FAIL" in line and "quarantined" in line,
+            f"it is still run and still reported as having failed:\n{quarantined_run}",
+        )
+        expect(
+            "PASS" not in line,
+            f"and is never reported as kept:\n{quarantined_run}",
+        )
+        expect(
+            "PASS" in line_about(quarantined_run, "kept"),
+            "a promise nobody set aside is reported exactly as it always was -- "
+            f"quarantining one is not a lever for the rest of the suite:\n{quarantined_run}",
+        )
+
+
+check(body)

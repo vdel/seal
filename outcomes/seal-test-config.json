@@ -1,0 +1,5 @@
+{
+  "runner": [
+    { "name": "library", "runner_type": "tap" }
+  ]
+}

@@ -1,0 +1,46 @@
+<div class="page">
+  <div class="card">
+    <h1>Todo</h1>
+    <p class="subtitle">
+      @if (service.ready()) {
+        {{ service.remaining() }} of {{ service.todos().length }} left
+      } @else {
+        Loading…
+      }
+    </p>
+
+    <form class="add" (ngSubmit)="onSubmit()">
+      <input
+        name="title"
+        type="text"
+        placeholder="What needs doing?"
+        autocomplete="off"
+        [ngModel]="draft()"
+        (ngModelChange)="draft.set($event)"
+      />
+      <button type="submit" class="add-btn" [disabled]="submitting() || !draft().trim()">Add</button>
+    </form>
+
+    @if (error(); as message) {
+      <p class="error">{{ message }}</p>
+    }
+
+    <ul class="items">
+      @for (todo of service.todos(); track todo.id) {
+        <li class="item" [class.done]="todo.done">
+          <label>
+            <input type="checkbox" [checked]="todo.done" (change)="onToggle(todo)" />
+            <span class="title">{{ todo.title }}</span>
+          </label>
+          <button type="button" class="remove-btn" [attr.aria-label]="'Delete ' + todo.title" (click)="onRemove(todo)">
+            ×
+          </button>
+        </li>
+      } @empty {
+        @if (service.ready()) {
+          <li class="empty">Nothing here yet.</li>
+        }
+      }
+    </ul>
+  </div>
+</div>

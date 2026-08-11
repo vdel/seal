@@ -1,0 +1,25 @@
+# The api container reads its environment from both of this shape's objects.
+#
+# `envFrom` is an atomic list, so this restates both sources rather than
+# appending one -- a strategic merge replaces it whole. The ConfigMap is
+# named first because with several sources the later one wins, and a
+# credential outranking a setting is the precedence a real environment
+# wants.
+#
+# Everything else about this container -- its image, its probes, the
+# `k8s://` values wired to the bundled datastores -- arrives from ../dev and
+# is not restated here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  template:
+    spec:
+      containers:
+      - name: example-api
+        envFrom:
+        - configMapRef:
+            name: example-api-config
+        - secretRef:
+            name: example-api-secrets

@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+#
+# Installs Seal's agent skills into a repository, so an agent opening that
+# repository discovers Seal the same way a teammate reading the README does.
+#
+# What it copies is `.claude/skills/seal*` and `.claude/agents/seal*` from a
+# checkout of Seal, plus a short managed block in the target's CLAUDE.md
+# pointing at them. Everything it touches is named for Seal, so it never has
+# to guess whether something else in `.claude/` is safe to replace.
+#
+# Usage: bin/install-seal-skills [options]
+#
+#   --target DIR   Repository to install into. Default: the git repository
+#                  enclosing the current directory, else the current directory.
+#   --from DIR     A checkout of Seal to install from. Default: the checkout
+#                  this script is in, else a shallow clone of --ref.
+#   --ref REF      Branch, tag or SHA to clone when there is nothing local.
+#                  Default: main.
+#   --check        Report what would change and exit non-zero if anything
+#                  would, without writing. What a CI job or a teammate's
+#                  shell wants.
+#   --link         Symlink back to the source checkout instead of copying, by
+#                  absolute path. For working on the skills themselves; not
+#                  for committing.
+#   --uninstall    Remove every skill, agent and CLAUDE.md block this put
+#                  there.
+#   -h, --help     This text.
+
+set -euo pipefail
+
+seal_repo_url="${SEAL_REPO_URL:-https://github.com/vdel/autologate}"
+block_begin='<!-- seal:skills:begin -->'
+block_end='<!-- seal:skills:end -->'
+
+target=""
+source_dir=""
+ref="main"
+mode="copy"
+action="install"
+
+die() { printf 'install-seal-skills: %s\n' "$*" >&2; exit 1; }
+note() { printf '%s\n' "$*"; }
+
+usage() { sed -n '3,28p' "$0" | sed 's/^# \{0,1\}//'; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --target) target="${2:-}"; shift 2 || die "--target needs a directory" ;;
+    --from) source_dir="${2:-}"; shift 2 || die "--from needs a directory" ;;
+    --ref) ref="${2:-}"; shift 2 || die "--ref needs a revision" ;;
+    --check) action="check"; shift ;;
+    --uninstall) action="uninstall"; shift ;;
+    --link) mode="link"; shift ;;
+    --copy) mode="copy"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown option '$1' (try --help)" ;;
+  esac
+done
+
+# -- Where things come from, and go ------------------------------------------
+
+if [ -z "$target" ]; then
+  target="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+fi
+[ -d "$target" ] || die "target '$target' is not a directory"
+target="$(cd "$target" && pwd)"
+
+script_root="$(cd "$(dirname "$0")/.." && pwd)"
+cleanup_clone=""
+if [ -z "$source_dir" ]; then
+  if [ -f "$script_root/.claude/skills/seal/SKILL.md" ]; then
+    source_dir="$script_root"
+  elif [ "$action" != "uninstall" ]; then
+    cleanup_clone="$(mktemp -d)"
+    trap 'rm -rf "$cleanup_clone"' EXIT
+    git clone --quiet --depth 1 --branch "$ref" "$seal_repo_url" "$cleanup_clone/seal" \
+      || die "could not clone $seal_repo_url at '$ref'"
+    source_dir="$cleanup_clone/seal"
+  fi
+fi
+
+if [ "$action" != "uninstall" ]; then
+  source_dir="$(cd "$source_dir" && pwd)"
+  [ -f "$source_dir/.claude/skills/seal/SKILL.md" ] \
+    || die "'$source_dir' is not a checkout of Seal (no .claude/skills/seal/SKILL.md)"
+  [ "$source_dir" != "$target" ] \
+    || die "'$target' is the Seal checkout itself; its skills are already where they belong"
+fi
+
+# -- What belongs to Seal ----------------------------------------------------
+#
+# Every skill and agent this ships is named `seal` or `seal-<something>`, and
+# only those names are ever replaced or removed in the target. Anything else
+# under .claude/ belongs to the project.
+
+seal_entries() {  # <dir>
+  [ -d "$1" ] || return 0
+  find "$1" -mindepth 1 -maxdepth 1 \( -name 'seal' -o -name 'seal-*' \) \
+    | LC_ALL=C sort
+}
+
+claude_md_block() {
+  cat <<BLOCK
+$block_begin
+## Seal
+
+This project builds on [Seal](https://github.com/vdel/autologate): one way to bring
+its services up, one way to resolve their credentials, and one way to run the
+tests a merge rests on -- the same way locally as in CI.
+
+Start from the **\`seal\`** skill in \`.claude/skills/\`, which routes to the
+rest: \`seal-install\`, \`seal-dev-loop\`, \`seal-add-service\`,
+\`seal-outcome\`, \`seal-merge-gate\`, \`seal-regression-loop\` and
+\`seal-doctor\`. Subagents in \`.claude/agents/\` do the long-running parts:
+\`seal-outcome-translator\`, \`seal-outcome-reviewer\`, \`seal-ci-doctor\`,
+\`seal-app-fixer\` and \`seal-loop-triager\`.
+
+Two rules are worth having before reading any of them:
+
+- **Run \`seal up\` and \`seal ci\`, never \`tilt up\`/\`tilt ci\` directly.**
+  The Kubernetes Secret each Tiltfile reads is generated just before Tilt
+  starts.
+- **Never edit an outcome test to make a run green.** A suite passes
+  identically whether the application was fixed or the test was rewritten,
+  and telling those apart is the whole point of the gate. Fix the
+  application, or say the promise is wrong and let a code owner decide.
+
+Maintained by Seal's own \`bin/install-seal-skills\`, which refreshes it from
+a checkout: anything written between the markers is overwritten on the next
+run.
+$block_end
+BLOCK
+}
+
+# -- Uninstall ---------------------------------------------------------------
+
+if [ "$action" = "uninstall" ]; then
+  removed=0
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    rm -rf "$entry"
+    note "removed $entry"
+    removed=$((removed + 1))
+  done <<EOF
+$(seal_entries "$target/.claude/skills"; seal_entries "$target/.claude/agents")
+EOF
+  if [ -f "$target/CLAUDE.md" ] && grep -qF "$block_begin" "$target/CLAUDE.md"; then
+    awk -v b="$block_begin" -v e="$block_end" '
+      $0 == b { skipping = 1 } !skipping { print } $0 == e { skipping = 0 }
+    ' "$target/CLAUDE.md" > "$target/CLAUDE.md.seal-tmp"
+    mv "$target/CLAUDE.md.seal-tmp" "$target/CLAUDE.md"
+    note "removed the Seal block from CLAUDE.md"
+    removed=$((removed + 1))
+  fi
+  note "$removed item(s) removed from $target"
+  exit 0
+fi
+
+# -- Plan --------------------------------------------------------------------
+#
+# The plan is computed before anything is written, so --check and the install
+# itself can never disagree about what is out of date.
+
+drift=0
+plan=""
+add_plan() { plan="$plan$1"$'\n'; drift=$((drift + 1)); }
+
+sync_one() {  # <source path> <destination path>
+  local src="$1" dest="$2"
+  if [ "$mode" = "link" ]; then
+    if [ "$(readlink "$dest" 2>/dev/null || true)" = "$src" ]; then return 0; fi
+    add_plan "link    ${dest#$target/}"
+  elif [ ! -e "$dest" ]; then
+    add_plan "install ${dest#$target/}"
+  elif ! diff -r -q "$src" "$dest" >/dev/null 2>&1; then
+    add_plan "update  ${dest#$target/}"
+  else
+    return 0
+  fi
+  if [ "$action" = "check" ]; then return 0; fi
+  rm -rf "$dest"
+  if [ "$mode" = "link" ]; then ln -s "$src" "$dest"; else cp -R "$src" "$dest"; fi
+}
+
+installed_names=" "
+for kind in skills agents; do
+  if [ "$action" != "check" ]; then mkdir -p "$target/.claude/$kind"; fi
+  while IFS= read -r src; do
+    [ -n "$src" ] || continue
+    name="$(basename "$src")"
+    installed_names="$installed_names $kind/$name "
+    sync_one "$src" "$target/.claude/$kind/$name"
+  done <<EOF
+$(seal_entries "$source_dir/.claude/$kind")
+EOF
+done
+
+# A skill this no longer ships is removed rather than left behind: a stale
+# instruction file reads exactly like a current one.
+for kind in skills agents; do
+  while IFS= read -r dest; do
+    [ -n "$dest" ] || continue
+    name="$(basename "$dest")"
+    case "$installed_names" in
+      *" $kind/$name "*) continue ;;
+    esac
+    add_plan "remove  ${dest#$target/}"
+    if [ "$action" != "check" ]; then rm -rf "$dest"; fi
+  done <<EOF
+$(seal_entries "$target/.claude/$kind")
+EOF
+done
+
+# -- The CLAUDE.md block -----------------------------------------------------
+
+claude_md="$target/CLAUDE.md"
+wanted="$(claude_md_block)"
+if [ ! -f "$claude_md" ]; then
+  add_plan "install CLAUDE.md"
+  [ "$action" = "check" ] || printf '%s\n' "$wanted" > "$claude_md"
+elif ! grep -qF "$block_begin" "$claude_md"; then
+  add_plan "update  CLAUDE.md (appending the Seal block)"
+  [ "$action" = "check" ] || { printf '\n%s\n' "$wanted" >> "$claude_md"; }
+else
+  current="$(awk -v b="$block_begin" -v e="$block_end" '
+    $0 == b { inside = 1 } inside { print } $0 == e { inside = 0 }
+  ' "$claude_md")"
+  if [ "$current" != "$wanted" ]; then
+    add_plan "update  CLAUDE.md (refreshing the Seal block)"
+    if [ "$action" != "check" ]; then
+      printf '%s\n' "$wanted" > "$claude_md.seal-block"
+      awk -v b="$block_begin" -v e="$block_end" -v f="$claude_md.seal-block" '
+        $0 == b { skipping = 1; while ((getline line < f) > 0) print line; close(f) }
+        !skipping { print }
+        $0 == e { skipping = 0 }
+      ' "$claude_md" > "$claude_md.seal-tmp"
+      mv "$claude_md.seal-tmp" "$claude_md"
+      rm -f "$claude_md.seal-block"
+    fi
+  fi
+fi
+
+# -- Report ------------------------------------------------------------------
+
+if [ "$drift" -eq 0 ]; then
+  note "Seal's skills are up to date in $target"
+  exit 0
+fi
+
+printf '%s' "$plan"
+if [ "$action" = "check" ]; then
+  note "$drift item(s) out of date in $target -- run bin/install-seal-skills to apply"
+  exit 1
+fi
+note "$drift item(s) written to $target -- commit .claude/ and CLAUDE.md so teammates get them"

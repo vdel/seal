@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+A promise lives in the repository, in the words somebody using the
+application would use -- not as a test name, not as a ticket, not as
+something only reconstructible from a conversation. What this checks is
+that the promise is answerable straight off the tree, with nothing else
+present, and that what comes back is the prompt's own sentence rather than
+anything generated from a slug or a test.
+
+- **No Tiltfile, no services, nothing deployed.** `seal outcomes`
+  reads the tree and nothing else, so a project that only holds an outcome
+  directory is asked for its promises without ever bringing anything up --
+  which is the mechanical reading of "survives any one session": there is
+  no session here at all.
+- **The exact sentence, character for character.** The headline chosen
+  shares no words with the slug it is filed under, so its appearing in the
+  listing verbatim cannot be an accident of formatting a directory name --
+  it is the prompt's own prose, read back.
+- **The same sentence whether or not a test exists yet.** Translating a
+  promise changes whether it is listed as having a test; it does not change
+  what the promise says. A prompt is a promise on its own, before anybody
+  has compiled it into anything.
+
+What this reading chose: the fixture never calls `.tiltfile()` at all --
+`find_seal_root()` accepts a directory holding the outcome tree on its
+own terms, and a check that reached for a Tiltfile anyway would be asserting
+that a session is needed when the promise says it is not.
+
+Deliberately not asserted, because the prompt withholds it: that this
+promise's own wording is *good*, or complete, or that promises are worded
+any particular way beyond being stated in the application's terms. What a
+project promises, and how, is the project's call.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, check, expect, project  # noqa: E402
+
+HEADLINE = "the cart still holds what I put in it after I refresh the page"
+
+
+def body() -> None:
+    with project("written-down") as fixture:
+        # No .tiltfile(), no service, no deployment, no CODEOWNERS: this
+        # project is nothing but an outcomes/ tree, on purpose.
+        fixture.group("cli")
+        fixture.promise(
+            "cli",
+            "checkout",
+            "keeps-items",
+            prompt=f"# {HEADLINE}\n\nRefresh means a fresh load of the page, not a reset "
+            "of the session behind it.\n",
+        )
+
+        listed = seal("outcomes", cwd=fixture.root)
+        expect(
+            listed.status == 0,
+            f"the promise reads straight off the checkout -- no Tiltfile, no session, "
+            f"nothing deployed:\n{listed}",
+        )
+        expect(
+            HEADLINE in listed.output,
+            f"in the exact words the prompt uses, not a name derived from the "
+            f"directory or a test:\n{listed}",
+        )
+        expect(
+            "no test yet" in listed.output,
+            f"and a promise with nothing translated from it is still on the record:\n{listed}",
+        )
+
+        # Translate it. What changes in the listing is whether it has a
+        # test -- never the sentence a reader sees.
+        fixture.write(
+            "outcomes/cli/checkout/keeps-items/check", "#!/bin/sh\nexit 0\n", executable=True
+        )
+        translated = seal("outcomes", cwd=fixture.root)
+        expect(
+            HEADLINE in translated.output,
+            f"the same sentence, verbatim, whether or not a test exists yet:\n{translated}",
+        )
+        expect(
+            "no test yet" not in translated.output,
+            f"only whether it is translated changed:\n{translated}",
+        )
+
+
+check(body)

@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+Every way a test silently fails to run looks the same from outside: nothing
+vouched for the promise. This asserts that none of those ways is ever read
+as the promise being kept -- which is the failure mode the merge gate is
+most exposed to, because it is the one that looks like nothing happening.
+
+Four shapes, one per way a verdict can fail to arrive, all built by making
+this project's own runner misbehave on purpose:
+
+- **Nothing at all.** A runner that reported on none of the promises it was
+  given, the way a container that never started reports on none of its.
+- **A run that stopped partway.** The promises it reached keep their
+  verdicts; the ones behind it are reported as untested rather than as
+  failures the suite invented.
+- **An answer that arrived unreadable.** A truncated write and a garbled
+  line are the same thing from here: something arrived, and nothing can be
+  read out of it.
+- **An answer that established nothing and said so.** A skipped point is
+  written as a pass by convention, and is not one.
+
+What this reading chose: the fixture makes the *runner* misbehave rather
+than corrupting a results file, because that is where these failures come
+from in a run nobody staged -- an image that never started, a container
+killed mid-stream, a report nobody produced.
+
+Deliberately not asserted, because the prompt withholds it: that the suite
+can say *why* a test did not run, and anything about a promise nothing has
+been translated from -- an ordinary state, reported differently, and not a
+failure.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import Project, seal, check, expect, project  # noqa: E402
+
+KEPT = "#!/bin/sh\nexit 0\n"
+PROMISES = ("one", "two", "three", "four")
+
+# A runner that reports on nothing, having exited as though all were well.
+SAYS_NOTHING = "#!/bin/sh\nexit 0\n"
+
+# A runner that dies in the middle of a run it had started reporting on.
+DIES_PARTWAY = """#!/bin/sh
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
+[ "${1:-}" = "--" ] && shift
+echo "1..$#"
+number=0
+for slug in "$@"; do
+  number=$((number + 1))
+  if [ "$number" -ge 3 ]; then
+    echo "the runner died here" >&2
+    exit 3
+  fi
+  echo "ok $number - $slug"
+done
+"""
+
+# A runner whose answers arrive unreadable: the promise was reported on, and
+# nothing can be read out of what it said.
+UNREADABLE = """#!/bin/sh
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
+[ "${1:-}" = "--" ] && shift
+echo "1..$#"
+number=0
+for slug in "$@"; do
+  number=$((number + 1))
+  echo "okay $number - $slug"
+done
+"""
+
+# A runner that establishes nothing and says so, in the one way TAP spells
+# with the word `ok` in it.
+SKIPS = """#!/bin/sh
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
+[ "${1:-}" = "--" ] && shift
+echo "1..$#"
+number=0
+for slug in "$@"; do
+  number=$((number + 1))
+  echo "ok $number - $slug # SKIP not run here"
+done
+"""
+
+
+def a_project_whose_runner(behaviour: str, fixture: Project) -> Project:
+    fixture.tiltfile().service("api", env="GREETING=hello\n")
+    fixture.deployment("api")
+    fixture.codeowners("/outcomes/ @owner\n")
+    fixture.group("cli", run=behaviour)
+    for name in PROMISES:
+        fixture.promise("cli", "gating", name, translation={"check": KEPT})
+    return fixture
+
+
+def reported(run, promise: str) -> str:
+    """What the run's listing said about one promise."""
+    lines = [
+        line
+        for line in run.output.splitlines()
+        if line.startswith(f"cli/gating/{promise} ")
+    ]
+    return lines[0] if lines else ""
+
+
+def body() -> None:
+    for label, behaviour, unreached in (
+        ("a runner that reported on nothing", SAYS_NOTHING, PROMISES),
+        ("a run that stopped partway", DIES_PARTWAY, None),
+        ("answers that arrived unreadable", UNREADABLE, PROMISES),
+        ("answers that established nothing", SKIPS, PROMISES),
+    ):
+        with project("no-verdict") as fixture:
+            a_project_whose_runner(behaviour, fixture)
+            run = seal("outcomes", "run", "--all", cwd=fixture.root)
+
+            expect(
+                run.status != 0,
+                f"{label}: a promise nothing vouched for does not pass the run:\n{run}",
+            )
+            expect(
+                "no verdict" in run.output,
+                f"{label}: what nothing vouched for is reported as untested:\n{run}",
+            )
+            for promise in unreached or PROMISES:
+                line = reported(run, promise)
+                expect(
+                    line != "",
+                    f"{label}: {promise} is still reported:\n{run}",
+                )
+                if unreached is None and "PASS" in line:
+                    # The promises this runner did reach before it died keep
+                    # the verdicts it gave them -- what it never reached is
+                    # what this promise is about.
+                    continue
+                expect(
+                    "PASS" not in line,
+                    f"{label}: {promise} is never reported as kept:\n{run}",
+                )
+                expect(
+                    "no verdict" in line,
+                    f"{label}: {promise} is reported as untested, not as a failure "
+                    f"the run invented:\n{run}",
+                )
+
+
+check(body)

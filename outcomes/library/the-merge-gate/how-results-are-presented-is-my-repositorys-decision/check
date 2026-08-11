@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+Two things the prompt asks for, asserted in order, plus a third shown by
+doing it rather than claimed separately:
+
+**A run's findings are available to the caller in a form it can act on.**
+The per-outcome verdict lands under the project's own `tests-results/`, as a
+plain file this check reads directly off disk -- standing in for a
+repository's own reporting doing the same thing. Nothing about reading it
+needs seal's own report; the file is the finding.
+
+**Nothing is published on the project's behalf.** Checked by giving the run
+its own empty `$HOME` and comparing its contents before and after. Anything
+that publishes -- a comment, a check run, a message to somewhere -- needs
+somewhere to keep a credential or a session, and the one place a CLI reaches
+for that without being told a path is `$HOME`. A run that leaves it exactly
+as it found it has reached for none of that, on a pass or on a failure: the
+second half of this check breaks the promise and asks again, because "how
+results are presented is my repository's decision" makes no exception for a
+red run.
+
+**A project can build a presentation from what it was handed.** Not a
+separate assertion -- it is what the first paragraph already does: reading
+`tests-results/` directly and turning a raw file into PASS/FAIL is a
+repository's own reporting, exercised here rather than described.
+
+What this reading chose:
+
+- **`$HOME` before/after, rather than intercepting the network directly.** A
+  checkout has no way to assert "no HTTP request was made" without owning
+  the network the subprocess runs on. What it can observe is whether the run
+  reached for anywhere a credential or a published-to destination would be
+  recorded -- an unmodified `$HOME` is exactly that, because nothing here
+  authenticated to anything it has nowhere to remember having done so.
+- **`UV_CACHE_DIR` pointed outside the sandboxed `$HOME`.** `uv` itself
+  writes its own package cache under `$HOME/.cache/uv` on every invocation,
+  which would show up as a difference having nothing to do with seal.
+  Pointed at the machine's real cache instead, so what the before/after
+  comparison sees is only what the command under test did.
+- **`seal _tests-results` is not exercised here.** It renders JUnit
+  reports (junit.py), and a `tap` group -- what this project's own outcomes
+  are -- writes none; asserting on it against a fixture with nothing for it
+  to read would test a code path this promise does not turn on. The plainer
+  surface -- the verdict file itself -- is what a `tap`-only project's own
+  reporting would actually read, and what this checks.
+- **A second run, after breaking a promise, repeats both checks.** The
+  prompt does not say "nothing is published, on a green run" -- a failing
+  run is held to the same boundary.
+
+Deliberately not asserted, because the prompt withholds it: that a project
+gets a presentation for free (it gets the findings, and turns them into one
+itself -- which is as far as this check goes too), and anything about which
+reporting tools exist or are any good.
+"""
+
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import Project, seal, check, expect, project  # noqa: E402
+
+KEPT = "#!/bin/sh\nexit 0\n"
+BROKEN = "#!/bin/sh\nexit 1\n"
+
+
+def _real_uv_cache_dir() -> str:
+    """Where `uv` already keeps its package cache on this machine -- pointed
+    at from inside a sandboxed $HOME so `uv`'s own writes there do not read
+    as something the run under test did."""
+    found = subprocess.run(["uv", "cache", "dir"], capture_output=True, text=True, timeout=30)
+    return found.stdout.strip() or str(Path(tempfile.gettempdir()) / "uv-cache")
+
+
+def _snapshot(home: Path) -> set[str]:
+    """Every path under this $HOME, relative to it -- what a run that never
+    touched it leaves exactly as it found it."""
+    return {str(path.relative_to(home)) for path in home.rglob("*")}
+
+
+def _run_with_empty_home(fixture: Project, *arguments: str):
+    """One run of the CLI with its own throwaway $HOME, and what that $HOME
+    held before and after -- so a caller can tell whether the run reached for
+    anywhere a credential or a publishing session would live."""
+    with tempfile.TemporaryDirectory(prefix="seal-home-") as home_dir:
+        home = Path(home_dir)
+        before = _snapshot(home)
+        run = seal(
+            *arguments,
+            cwd=fixture.root,
+            env={"HOME": str(home), "UV_CACHE_DIR": _real_uv_cache_dir()},
+        )
+        after = _snapshot(home)
+        return run, before, after
+
+
+def body() -> None:
+    with project("results-handed-back") as fixture:
+        fixture.codeowners("/outcomes/ @owner\n")
+        fixture.group("cli")
+        fixture.promise("cli", "gating", "a-promise", translation={"check": KEPT})
+
+        run, before, after = _run_with_empty_home(fixture, "outcomes", "run", "--all")
+        expect(run.status == 0, f"a project keeping its promise passes:\n{run}")
+        expect(
+            before == after,
+            f"a run touches nothing under its own $HOME -- nowhere here to keep a "
+            f"credential or a session for anything it might have published: "
+            f"before={sorted(before)} after={sorted(after)}",
+        )
+
+        verdict_file = (
+            fixture.root / "tests-results" / "outcomes" / "cli" / "gating" / "a-promise" / "passed"
+        )
+        expect(
+            verdict_file.is_file(),
+            f"the run's finding is a plain file the caller can read for itself, not "
+            f"something only seal's own report holds: {verdict_file} is missing",
+        )
+        expect(
+            verdict_file.read_text(encoding="utf-8").strip() == "1",
+            f"and what it holds is the verdict this run actually reached: "
+            f"{verdict_file.read_text(encoding='utf-8')!r}",
+        )
+
+        # The prompt does not say "nothing is published, when things pass" --
+        # a failing run is held to the same boundary.
+        fixture.write("outcomes/cli/gating/a-promise/check", BROKEN, executable=True)
+        red, red_before, red_after = _run_with_empty_home(fixture, "outcomes", "run", "--all")
+        expect(red.status != 0, f"a broken promise still turns the run red:\n{red}")
+        expect(
+            red_before == red_after,
+            f"and a failing run reaches for nowhere to publish anything either: "
+            f"before={sorted(red_before)} after={sorted(red_after)}",
+        )
+        expect(
+            verdict_file.read_text(encoding="utf-8").strip() == "0",
+            "the failure is still handed back as a plain file, the same way the pass was",
+        )
+
+
+check(body)

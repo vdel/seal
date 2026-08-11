@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+Reachability runs both ways: from a test to the promise it was translated
+from, and from a promise to whatever has been translated from it. The tree
+itself is the mechanism -- a prompt and its translation share one directory,
+with nowhere else either could be -- so what this checks is that `seal
+check` actually holds the tree to that shape rather than merely documenting
+it.
+
+Three shapes, one per case the prompt names as worth covering:
+
+- **A prompt paired with a test.** The ordinary case, checked because the
+  other two are only interesting relative to it: `seal check` has to
+  accept this shape before refusing a broken one means anything.
+- **A prompt with nothing translated from it yet.** Fine on its own terms --
+  the promise says the missing direction is the one that matters, so this
+  has to stay green, and the outcome still has to be visible in the listing
+  as exactly that: written down, not yet translated.
+- **A translation with no prompt behind it.** A `check` file dropped in a
+  directory that never got a `prompt.md`. Refused, because a test with
+  nothing to point a reviewer at is a test whose intent cannot be reviewed
+  -- which is what "reachable" was for.
+
+What this reading chose: the third case is built by adding a translation
+file directly, rather than by deleting a `prompt.md` that was there --
+`Project.promise()` always writes one, so the fixture writes the outcome
+directory by hand for that one case, the same way a real translation gone
+wrong would arrive without one.
+
+Deliberately not asserted, because the prompt withholds it: whether the test
+is a *good* reading of the promise it sits beside. Reachability is what
+makes that judgement checkable by a person; making it is not this check's
+business.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, check, expect, project  # noqa: E402
+
+KEPT = "#!/bin/sh\nexit 0\n"
+
+
+def body() -> None:
+    with project("traceable") as fixture:
+        fixture.tiltfile().service("api", env="GREETING=hello\n")
+        fixture.deployment("api")
+        fixture.codeowners("/outcomes/ @owner\n")
+        fixture.group("cli")
+
+        # A prompt paired with its test: the tree seal expects.
+        fixture.promise(
+            "cli",
+            "gating",
+            "paired",
+            prompt="# a paired promise\n\nWhat this promise is about.\n",
+            translation={"check": KEPT},
+        )
+        good = seal("check", cwd=fixture.root)
+        expect(
+            good.status == 0,
+            f"a prompt paired with its own test passes the layout check:\n{good}",
+        )
+        expect(
+            "pairs a prompt with a test" in good.output,
+            f"and says so, naming what it confirmed:\n{good}",
+        )
+
+        # A promise with nothing translated from it yet: an ordinary state,
+        # not a problem -- the missing direction is the one that matters.
+        fixture.promise(
+            "cli", "gating", "not-yet", prompt="# a promise not yet translated\n"
+        )
+        still_good = seal("check", cwd=fixture.root)
+        expect(
+            still_good.status == 0,
+            f"a promise with nothing translated from it yet is not refused:\n{still_good}",
+        )
+        listed = seal("outcomes", cwd=fixture.root)
+        expect(
+            "not-yet" in listed.output and "no test yet" in listed.output,
+            f"and is listed as exactly that -- written down, not yet translated:\n{listed}",
+        )
+
+        # A test with no promise behind it: a translation file with no
+        # prompt.md alongside it.
+        fixture.write("outcomes/cli/gating/orphan/check", KEPT, executable=True)
+        orphaned = seal("check", cwd=fixture.root)
+        expect(
+            orphaned.status != 0,
+            f"a test with no promise behind it is refused rather than accepted quietly:\n{orphaned}",
+        )
+        expect(
+            "orphan" in orphaned.output and "no prompt.md" in orphaned.output,
+            f"and names the directory that has nothing to trace back to:\n{orphaned}",
+        )
+
+
+check(body)

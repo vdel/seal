@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+The promise has two halves, and both are asserted here.
+
+**Which paths need a code owner.** Every path under the specification --
+the prompt, the test translated from it, a fixture that test reads, and what
+the group's tests share. A rule reaching some of those and not others is
+refused, which is the neighbouring promise's business; what this asserts is
+that ownership actually reaches all four.
+
+**That a change says which of the two happened.** A green run looks
+identical whether the application was fixed or the failing test was
+rewritten to agree with it, so the difference has to be structural. It is:
+a change reaching the tree is named, and one that stayed in the application
+is not. That is what a session iterating towards green finds out in the
+round it happened, rather than in a review it was not expecting.
+
+What this reading chose, where the prompt left it open:
+
+- **A git repository as the unit of change.** The promise is about what a
+  change reaches, and a change is a diff from something. So the fixture
+  commits, edits, and asks -- rather than asserting on a pattern language,
+  which would be asserting on CODEOWNERS rather than on the promise.
+- **Four edits, one per kind of path.** The application, a test, a prompt,
+  and shared code. The first is the one that must come back quiet; the
+  other three must each come back named.
+
+Deliberately not asserted, because the prompt withholds it: that a code
+owner notices a bad edit, and that a translation can never change. Both are
+about what a person concludes, and this is a promise about who has to look.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, check, expect, project  # noqa: E402
+
+APPLICATION = "services/api/app.py"
+TEST = "outcomes/cli/gating/a-promise/check"
+PROMPT = "outcomes/cli/gating/a-promise/prompt.md"
+SHARED = "outcomes/cli/helpers/shared.py"
+
+
+def body() -> None:
+    with project("editing-a-test") as fixture:
+        fixture.tiltfile().service("api", env="GREETING=hello\n")
+        fixture.write(APPLICATION, "def greet():\n    return 'hello'\n")
+        fixture.deployment("api")
+        fixture.group("cli")
+        fixture.promise(
+            "cli",
+            "gating",
+            "a-promise",
+            translation={"check": "#!/bin/sh\nexit 0\n", "fixture.json": "{}\n"},
+        )
+        fixture.write(SHARED, "SHARED = 1\n")
+        fixture.codeowners("/outcomes/ @owner\n")
+        fixture.repository()
+
+        # Every path under the specification is one a code owner has to
+        # approve. The command that refuses a tree where that is not true is
+        # the same one a project runs before anything is built.
+        owned = seal("check", cwd=fixture.root)
+        expect(
+            owned.status == 0,
+            f"prompt, test, fixture and shared code are all owned:\n{owned}",
+        )
+
+        # A change that stayed in the application. Nothing here needs a code
+        # owner on the specification's account, and a run that said otherwise
+        # would make every application fix look like a rewritten test.
+        fixture.write(APPLICATION, "def greet():\n    return 'hello there'\n")
+        application_only = seal(
+            "outcomes", "touched", "--since", "HEAD", cwd=fixture.root
+        )
+        expect(
+            application_only.status == 0,
+            f"a change that stayed in the application is not held up:\n{application_only}",
+        )
+        expect(
+            "reaches nothing" in application_only.output,
+            f"and says so, rather than leaving it to be inferred:\n{application_only}",
+        )
+
+        for label, path in (
+            ("a test", TEST),
+            ("a prompt", PROMPT),
+            ("what this group's tests share", SHARED),
+        ):
+            fixture.commit(f"before touching {label}")
+            fixture.write(path, fixture.read(path) + "\n# edited\n")
+            reached = seal("outcomes", "touched", "--since", "HEAD", cwd=fixture.root)
+            expect(
+                reached.status != 0,
+                f"a change touching {label} is not one that merges unattended:\n{reached}",
+            )
+            expect(
+                path in reached.output,
+                f"and the path it reached is named -- {label}:\n{reached}",
+            )
+
+
+check(body)

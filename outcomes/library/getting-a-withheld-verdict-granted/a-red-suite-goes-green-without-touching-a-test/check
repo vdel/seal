@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+The loop the prompt describes -- run everything from a baseline, confirm
+each failure, fix the application, run everything again -- is an agent's
+process (/rfcs/0013-regression-loop.md). Nothing here runs an agent or
+simulates one deciding what to fix: this check is the one flipping the
+fixture's state, deterministically, and then asking Seal's own
+commands what they make of it.
+
+The "application" a real project's agent would edit is, here, one plain
+file outside the outcome tree (`app-state`) that a translated check reads.
+Flipping its content from `check()`'s own Python is standing in for "the
+application changed" without starting anything agent-shaped -- the
+promise is about the loop's *shape*, not about anything that could decide
+to run it. The loop's unit is the whole suite: both rounds run with
+`--all --confirm`, over every promise the fixture declares, never a single
+outcome by name.
+
+What makes "without touching a test" checkable from a checkout is
+`seal outcomes touched` (/rfcs/0013-regression-loop.md,
+outcome_changes.py): a diff against a git baseline, over the outcome tree
+only. So the fixture is a real repository, and what gets asserted is that
+the diff between the red baseline and the green rerun names nothing under
+`outcomes/` -- not that the check script was never opened, which nothing
+outside the file's own mtime could establish, but the thing the gate
+actually enforces at the merge.
+
+Two promises, so `--all` has more than one promise to leave alone: one
+that reacts to the toggle and one that is simply always kept, to make the
+"every promise, every round" half of the prompt mean something -- a
+fixture with only the failing promise would pass just as well if the loop
+reran a single outcome by name, which is exactly the shape the prompt says
+is not the promise.
+
+Both directions of the mechanism are driven for real, in the same fixture:
+after the toggle flips the suite from red to green with nothing touched
+under `outcomes/`, the check *also* edits the translation itself and shows
+`outcomes touched` naming it -- so "reaches nothing" above is shown to mean
+something, not just that this reporting never fires.
+
+What this reading chose, where the prompt left it open:
+
+- **The tap group runs on the machine**, so there is no cluster, no reset,
+  and no session to bring up -- `--all --confirm` and `outcomes touched`
+  are both commands a checkout answers on its own.
+- **The application fix is a single file's content**, chosen to be the
+  smallest possible stand-in for "the application changed" that a `tap`
+  check can observe without a service or a container behind it.
+
+Deliberately not asserted, because the prompt withholds it: that every red
+suite can be driven green this way (two promises really can conflict, and
+then a person has to decide), and that the loop shown here is unattended --
+this check plays the part of the agent between rounds on purpose.
+"""
+
+import shlex
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, check, expect, project  # noqa: E402
+
+KEPT = "#!/bin/sh\nexit 0\n"
+
+
+def line_about(run, slug: str) -> str:
+    lines = [line for line in run.output.splitlines() if line.startswith(f"{slug} ")]
+    return lines[0] if lines else ""
+
+
+def body() -> None:
+    with project("green-without-editing") as fixture:
+        toggle = fixture.root / "app-state"
+        toggle.write_text("broken", encoding="utf-8")
+
+        reacts = f"""#!/bin/sh
+state=$(cat {shlex.quote(str(toggle))} 2>/dev/null || echo broken)
+[ "$state" = "fixed" ]
+"""
+        fixture.codeowners("/outcomes/ @owner\n")
+        fixture.group("cli")
+        fixture.promise("cli", "gating", "reacts-to-app", translation={"check": reacts})
+        fixture.promise("cli", "gating", "always-fine", translation={"check": KEPT})
+        fixture.repository()
+
+        # Round one, from the baseline: both promises, confirmed before
+        # anything acts on either.
+        red = seal("outcomes", "run", "--all", "--confirm", cwd=fixture.root)
+        expect(red.status != 0, f"the suite starts red, over every promise:\n{red}")
+        expect(
+            "FAIL" in line_about(red, "cli/gating/reacts-to-app"),
+            f"the one that reacts to the application is the one that failed:\n{red}",
+        )
+        expect(
+            "confirmed" in line_about(red, "cli/gating/reacts-to-app"),
+            f"and it failed again on its own, so the application is what to fix:\n{red}",
+        )
+        expect(
+            "PASS" in line_about(red, "cli/gating/always-fine"),
+            f"the promise that never depended on the toggle is unaffected:\n{red}",
+        )
+
+        # The fix: one file outside the outcome tree, standing in for
+        # whatever an agent would actually have changed in a real project.
+        toggle.write_text("fixed", encoding="utf-8")
+
+        # Round two, from the baseline again -- every promise, not just the
+        # one that was red.
+        green = seal("outcomes", "run", "--all", "--confirm", cwd=fixture.root)
+        expect(
+            green.status == 0,
+            f"the whole suite is green after the application-only fix:\n{green}",
+        )
+        expect(
+            "PASS" in line_about(green, "cli/gating/reacts-to-app")
+            and "PASS" in line_about(green, "cli/gating/always-fine"),
+            f"both promises, not just the one that changed:\n{green}",
+        )
+
+        # The mechanism the prompt is actually about: the diff that got the
+        # suite from red to green reaches nothing a code owner would need to
+        # approve.
+        touched = seal("outcomes", "touched", cwd=fixture.root)
+        expect(
+            touched.status == 0 and "reaches nothing" in touched.output,
+            f"a red suite went green without anybody touching a test:\n{touched}",
+        )
+
+        # The other direction: the same command, on a change that does
+        # reach the tree, so "reaches nothing" above is shown to be a real
+        # answer and not one this report always gives.
+        edited = "outcomes/cli/gating/reacts-to-app/check"
+        fixture.write(edited, fixture.read(edited) + "\n# not a behaviour change\n")
+        after_edit = seal("outcomes", "touched", cwd=fixture.root)
+        expect(
+            after_edit.status != 0 and edited in after_edit.output,
+            f"a change that does reach the specification is named, not waved "
+            f"through the same way:\n{after_edit}",
+        )
+
+
+check(body)

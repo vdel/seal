@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+A container with no readiness probe is reported Ready the instant its
+process launches, which silently defeats the promise above this one. So the
+run is refused rather than performed -- and both halves of *how* it is
+refused are the promise: before anything is built, and naming every
+container at fault in one pass.
+
+The three shapes the fixture builds are the ones a project actually gets
+wrong:
+
+- **Several offenders at once.** A project told about the first of them has
+  a feedback loop the length of a build, three times over.
+- **An offender a patch introduces.** The manifests as written are clean;
+  what deploys is not. So the overlays are built the way a run builds them
+  rather than read as files.
+- **An offender in an overlay other than the one usually deployed.** The
+  shape that ships is checked as surely as the shape it is developed in.
+
+What this reading chose: "before the environment is built" is asserted
+against `seal ci` -- the gating run, and the one with something
+expensive behind it -- by establishing that the refusal came and nothing
+was started. A refusal that arrived after a cluster was up would still
+print the same list.
+
+Deliberately not asserted, because the prompt withholds it: that a declared
+probe is a *good* probe, and anything about containers that legitimately
+have none to declare.
+"""
+
+import shutil
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, cannot_run, check, expect, project  # noqa: E402
+from helpers.projects import container  # noqa: E402
+
+
+def body() -> None:
+    if shutil.which("kubectl") is None:
+        # What builds an overlay into what it would deploy. Without it this
+        # check cannot tell a refusal about probes from a refusal about
+        # kubectl, so it establishes nothing rather than guessing.
+        cannot_run("kubectl is not on PATH, so an overlay cannot be built to check it")
+
+    with project("readiness") as fixture:
+        fixture.tiltfile().service("api", env="GREETING=hello\n")
+        fixture.codeowners("* @owner\n")
+        fixture.deployment("api", [container("api"), container("sidecar")])
+
+        declared = seal("check", cwd=fixture.root)
+        expect(
+            declared.status == 0,
+            f"a project whose containers all declare a probe is not refused:\n{declared}",
+        )
+
+        # Two containers in one Deployment and a third in another: a project
+        # putting its manifests right one failed run at a time is a project
+        # whose feedback loop is the length of a build.
+        fixture.deployment("api", [container("api", probe=False), container("sidecar", probe=False)])
+        fixture.deployment("cache", [container("cache", probe=False)])
+
+        refused = seal("ci", cwd=fixture.root)
+        expect(refused.status != 0, f"a project that cannot tell ready from started is refused:\n{refused}")
+        for offender in ("api", "sidecar", "cache"):
+            expect(
+                offender in refused.output,
+                f"every container at fault is named in one pass -- {offender}:\n{refused}",
+            )
+        expect(
+            "starting" not in refused.output,
+            f"and the refusal comes before anything is started, rather than after a "
+            f"run has paid for a build it then cannot trust:\n{refused}",
+        )
+
+    # An offender a patch introduces: nothing in the manifests as written is
+    # missing a probe, and what would deploy is.
+    with project("readiness-patched") as fixture:
+        fixture.tiltfile().service("api", env="GREETING=hello\n")
+        fixture.codeowners("* @owner\n")
+        fixture.deployment("api", overlay="base")
+        fixture.write(
+            "k8s/patched/kustomization.yaml",
+            "resources:\n  - ../base\npatches:\n  - path: sidecar.yaml\n",
+        )
+        fixture.write(
+            "k8s/patched/sidecar.yaml",
+            "apiVersion: apps/v1\n"
+            "kind: Deployment\n"
+            "metadata:\n"
+            "  name: api\n"
+            "spec:\n"
+            "  template:\n"
+            "    spec:\n"
+            "      containers:\n"
+            "        - name: telemetry\n"
+            "          image: nginx:stable\n",
+        )
+
+        patched = seal("check", cwd=fixture.root)
+        expect(
+            patched.status != 0,
+            f"a container a patch introduces is checked as what deploys, not as what "
+            f"was written:\n{patched}",
+        )
+        expect(
+            "telemetry" in patched.output and "patched" in patched.output,
+            f"and is named, with the overlay that would deploy it:\n{patched}",
+        )
+
+    # An offender in an overlay other than the one usually deployed: the
+    # shape that ships is held to this as surely as the shape it is
+    # developed in.
+    with project("readiness-other-overlay") as fixture:
+        fixture.tiltfile().service("api", env="GREETING=hello\n")
+        fixture.codeowners("* @owner\n")
+        fixture.deployment("api", overlay="dev")
+        fixture.deployment("api", [container("api", probe=False)], overlay="non-dev")
+
+        elsewhere = seal("check", cwd=fixture.root)
+        expect(
+            elsewhere.status != 0,
+            f"an overlay other than the usual one is checked too:\n{elsewhere}",
+        )
+        expect(
+            "non-dev" in elsewhere.output,
+            f"and the refusal says which shape it found it in:\n{elsewhere}",
+        )
+
+
+check(body)

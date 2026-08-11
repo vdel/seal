@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+The promise is that a run succeeds only once every resource is *serving* --
+not once every process has started -- so the fixture is a project with a
+real gap between the two: a container whose process starts at once and
+whose port does not answer for another half minute, with a readiness probe
+that says so.
+
+The gap is the whole translation. A project without one cannot tell a run
+that waited from a run that did not, so a check pointed at a project that
+serves immediately -- the worked example included -- would pass whether or
+not this promise held. RFC 0014 allows a translation to build the project
+it needs, and this is the case it had in mind.
+
+What the check reads, once the run has returned:
+
+- **The run waited.** Measured from when the container itself started, not
+  from when the command was typed: a run that spent a minute building an
+  image and returned the instant the container launched would satisfy a
+  wall-clock reading of this and keep none of the promise.
+- **What it handed back was serving.** The application answers on the first
+  request after the run returned -- no retry loop, because a retry loop is
+  exactly the thing this promise exists to make unnecessary.
+
+Deliberately not asserted, because the prompt withholds it: how long a
+session takes -- a slow environment keeps this promise as fully as a fast
+one, so the only duration here is the one the fixture itself built in --
+and whether a serving resource is a *correct* one.
+"""
+
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, check, deployed, expect, kubectl, project  # noqa: E402
+from helpers.projects import container  # noqa: E402
+
+
+def _seconds(timestamp: str) -> float:
+    """A Kubernetes timestamp as seconds on this machine's clock. The
+    cluster runs here, so the two are the same clock."""
+    from datetime import datetime, timezone
+
+    return (
+        datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+        .replace(tzinfo=timezone.utc)
+        .timestamp()
+    )
+
+# How long the container takes to serve after its process starts. Long
+# enough that a run which did not wait is unmistakable, short enough that
+# the wait is not most of what this check costs.
+GAP_SECONDS = 20
+
+SERVES_LATE = f"""FROM busybox:1.36
+RUN mkdir -p /www && printf 'serving\\n' > /www/index.html
+# The process starts at once. The port does not answer until later, which
+# is the difference this promise is about.
+CMD ["sh", "-c", "sleep {GAP_SECONDS}; httpd -f -p 8080 -h /www"]
+"""
+
+SAYS_WHEN_IT_IS_SERVING = {
+    "httpGet": {"path": "/", "port": 8080},
+    "periodSeconds": 2,
+    "failureThreshold": 60,
+}
+
+
+def body() -> None:
+    with project("ready-session") as fixture:
+        fixture.codeowners("* @owner\n")
+        fixture.service("slowpoke", env="")
+        fixture.deploys(
+            "slowpoke",
+            SERVES_LATE,
+            containers=[
+                container("slowpoke", image="slowpoke", probe=False)
+                | {"readinessProbe": SAYS_WHEN_IT_IS_SERVING}
+            ],
+        )
+
+        with deployed(fixture) as run:
+            returned = time.time()
+            expect(run.status == 0, f"the run brings this project up:\n{run}")
+
+            started = kubectl(
+                "get", "pod", "-l", "app=slowpoke",
+                "-o", "jsonpath={.items[0].status.containerStatuses[0].state.running.startedAt}",
+            )
+            expect(
+                started.status == 0 and started.stdout.strip() != "",
+                f"the container the run deployed is running:\n{started}",
+            )
+            waited = returned - _seconds(started.stdout.strip())
+            expect(
+                waited >= GAP_SECONDS,
+                f"the run waited for the resource to serve rather than for its "
+                f"process to start: it returned {waited:.0f}s after this container "
+                f"launched, and this one does not answer for {GAP_SECONDS}s",
+            )
+
+            # On the first request, with nothing retrying: what a run hands
+            # back is a session a test can drive, and a test that had to
+            # poll first would be one this promise had not helped.
+            answered = kubectl(
+                "exec", "deploy/slowpoke", "--",
+                "wget", "-q", "-O-", "http://127.0.0.1:8080/",
+            )
+            expect(
+                answered.status == 0 and "serving" in answered.stdout,
+                f"what the run reported ready is serving:\n{answered}",
+            )
+
+
+check(body)

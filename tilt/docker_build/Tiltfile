@@ -1,0 +1,117 @@
+# Shared docker_build() wrapper that builds via a GitHub-Actions-cached
+# buildx build.
+#
+# Deciding *when* to reach for this instead of Tilt's native docker_build()
+# is the caller's job, not this file's: see SEAL_BUILDX_CACHE in
+# /tilt/seal/build.Tiltfile, which seal_service() (use_cache=True,
+# the default) checks before calling anything here. That file load()s this one
+# by relative path, so a project registers only `seal`. Only a CI
+# workflow sets that variable -- .github/workflows/seal-ci.yml at the
+# repo root does, and so does a deploy pipeline; local `tilt up` never does.
+# See that
+# workflow's "Set up Docker Buildx" / "Expose GitHub Actions cache to buildx"
+# steps for how the cache backend gets wired up before Tilt ever runs.
+#
+# Why this matters for where the cache lives: the GitHub Actions cache (and
+# the crazy-max/ghaction-github-runtime tokens that authenticate buildx
+# against it) are always scoped to whichever repository's Actions run is
+# executing -- i.e. the *caller* of these reusable workflows -- never to
+# wherever this seal package itself happens to live. A project that pulls
+# `seal` in from another repo still gets its own private build cache, with
+# nothing to configure here or in the reusable workflows.
+
+
+def cached_docker_build(ref, context, dockerfile='Dockerfile', target=None, live_update=[], registry=None, **kwargs):
+    """Builds `ref` via `docker buildx build --cache-from/--cache-to
+    type=gha`, Tilt's `custom_build()` around a GitHub-Actions-cached buildx
+    build. Unlike Tilt's native docker_build(), this always takes that path
+    -- see /tilt/seal/README.md for the SEAL_BUILDX_CACHE-gated decision
+    of when to call this at all instead of docker_build() directly.
+
+    If SEAL_IMAGE_TAG is set in the environment (only a pipeline actually
+    publishing a build sets it, to the git SHA being deployed -- never local
+    `tilt up`, and never this repo's own CI), this also explicitly re-tags
+    and pushes the just-built image as `<registry>/ref:$SEAL_BUILD_ID-
+    $SEAL_IMAGE_TAG` (or bare `ref:...` if `registry` isn't given), in
+    addition to whatever Tilt itself pushes it as. SEAL_BUILD_ID (set by
+    that same pipeline, alongside SEAL_IMAGE_TAG) is a monotonic, zero-
+    padded build identifier prefixed onto the tag so plain lexicographic
+    string comparison of two tags is also a correct recency comparison --
+    a tool selecting the newest image sorts by each image's own embedded
+    build timestamp, which a fully cache-hit rebuild reproduces exactly, so
+    the tie-break on tag string is what has to track real recency. Omitting
+    SEAL_BUILD_ID falls back to the bare `$SEAL_IMAGE_TAG` tag.
+
+    This is NOT redundant with Tilt's own push, and can't be replaced by
+    passing `tag=` to custom_build() below: confirmed against Tilt's own
+    source (internal/build/custom_builder.go) that even when a custom `tag`
+    is given, Tilt only uses it as the *local* build target ($EXPECTED_REF)
+    -- the image it actually pushes to the registry is always re-tagged
+    first under Tilt's own content-digest-derived tag, never the caller's
+    tag. Since nothing downstream (a release-tracking tool watching the
+    registry for new builds) can discover or reason about Tilt's opaque
+    tag, this extra, explicit
+    tag+push is the only way a real, externally-stable identifier for this
+    exact build lands in the registry at all. Cheap:
+    the image is already sitting in the local Docker daemon (`--load`
+    below), so this is just a local tag plus a push of already-cached
+    layers, not a rebuild.
+
+    `registry`: deliberately NOT read from Tilt's own `default_registry()`
+    -- Tilt doesn't expose that back to Starlark, and this file (used by
+    every project, per the module docstring above) has no business assuming
+    any one project's registry anyway. Same "project's own Tiltfile's job"
+    principle as `default_registry()` itself (see config.Tiltfile's
+    select_k8s_overlay() docstring) -- pass whatever the calling project
+    passed to `default_registry()`, or leave it unset for a project that
+    doesn't push anywhere outside local dev.
+
+    **kwargs: any other docker_build() argument (build_args, extra_tag,
+        ignore, only, network, ssh, secret, platform, ...). Not supported by
+        the buildx command built below, so given anything here fails loudly
+        instead of silently building without it -- use Tilt's native
+        docker_build() for those instead.
+    """
+    if kwargs:
+        fail(
+            "cached_docker_build('{}'): docker_build() argument(s) {} aren't supported ".format(
+                ref, ', '.join(sorted(kwargs.keys())),
+            )
+            + "by the GitHub-Actions buildx-cache path. Use Tilt's native docker_build() for them instead."
+        )
+
+    # One cache line per image+target (e.g. 'example-api-test' vs
+    # '...-runtime') so stages that don't share layers don't thrash each
+    # other's cache entries.
+    scope = '{}-{}'.format(ref, target or 'default')
+
+    command = [
+        'docker', 'buildx', 'build',
+        '--load',
+        '--cache-from', 'type=gha,scope={}'.format(scope),
+        '--cache-to', 'type=gha,mode=max,scope={}'.format(scope),
+        '-f', os.path.join(context, dockerfile),
+    ]
+    if target:
+        command += ['--target', target]
+    command += ['-t', '$EXPECTED_REF', context]
+
+    image_tag = os.getenv('SEAL_IMAGE_TAG', '')
+    if image_tag:
+        # SEAL_BUILD_ID's prefix, when set, is what makes a plain string
+        # comparison between two tags a correct recency comparison too --
+        # see this function's own docstring.
+        build_id = os.getenv('SEAL_BUILD_ID', '')
+        tag_value = '{}-{}'.format(build_id, image_tag) if build_id else image_tag
+        qualified_ref = '{}/{}'.format(registry.rstrip('/'), ref) if registry else ref
+        stable_ref = '{}:{}'.format(qualified_ref, tag_value)
+        command += ['&&', 'docker', 'tag', '$EXPECTED_REF', stable_ref]
+        command += ['&&', 'docker', 'push', stable_ref]
+
+    literal = ('$EXPECTED_REF', '&&')
+    custom_build(
+        ref,
+        command=' '.join([part if part in literal else shlex.quote(part) for part in command]),
+        deps=[context],
+        live_update=live_update,
+    )

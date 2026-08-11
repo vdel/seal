@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+Two services, each with a test suite of its own: `alpha`'s passes, `beta`'s
+does not. What comes back after one run is read from the results directory
+alone -- `tests-results/<service_name>/`, the same one place the sibling
+promises in this epic already read a service's own report from -- because
+that is where the prompt says results "come back". Asserting instead on a
+run's console output would pin the format of a log line the prompt
+explicitly does not promise ("Anything about the format of a service's own
+test output").
+
+Both services are deployed and tested by the same run, so a report missing
+for either one is exactly the failure this exists to catch: `alpha`'s report
+arriving at all is what rules out a run that drops a passing service's
+results because nothing failing asked for them ("silence and success are
+different things"), and `beta`'s living under its own name, distinct from
+`alpha`'s, is what rules out a run that only says *something* failed.
+
+The run is a test build (`--build_type test`), because that is the only
+build in which a service's own suite runs at all. `beta`'s failing suite is
+expected to fail the whole run -- reading both directories back from a run
+that itself reports failure is the point, not a symptom to route around: a
+report that only ever came back from a run that passed would say nothing
+about the run somebody is actually reading when this matters.
+
+Deliberately not asserted, because the prompt withholds it: the format of a
+service's own test output or which framework produced it -- both suites
+here write JUnit XML by hand, which is this fixture's choice, not a claim
+the promise makes. And anything about how these results are presented
+afterwards -- a dashboard, a pull-request comment -- which is the consuming
+project's business, not this one's.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import check, deployed, expect, project  # noqa: E402
+from helpers.projects import container  # noqa: E402
+
+# rsync, because that is how a service's results come back from the
+# container that produced them. sleep, because what either service does at
+# runtime is not what this promise is about.
+IMAGE = """FROM alpine:3.20 AS runtime
+RUN apk add --no-cache rsync && mkdir -p /app/tests-results
+CMD ["sh", "-c", "sleep infinity"]
+
+FROM runtime AS test
+COPY tests/run.sh /app/tests/run.sh
+"""
+
+PROBE = {
+    "exec": {"command": ["sh", "-c", "test -d /app/tests-results"]},
+    "periodSeconds": 2,
+    "failureThreshold": 30,
+}
+
+ALPHA_TESTS = """#!/bin/sh
+printf '%s' '<testsuite name="alpha" tests="1" failures="0" errors="0">' \\
+  '<testcase classname="alpha" name="does its job"/></testsuite>' \\
+  > /app/tests-results/junit.xml
+"""
+
+BETA_TESTS = """#!/bin/sh
+printf '%s' '<testsuite name="beta" tests="1" failures="1" errors="0">' \\
+  '<testcase classname="beta" name="does its job">' \\
+  '<failure message="broken on purpose"/></testcase></testsuite>' \\
+  > /app/tests-results/junit.xml
+"""
+
+
+def build(fixture) -> None:
+    for name, tests in (("alpha", ALPHA_TESTS), ("beta", BETA_TESTS)):
+        fixture.write(f"services/{name}/tests/run.sh", tests)
+        fixture.deploys(
+            name,
+            IMAGE,
+            containers=[
+                container(name, image=name, probe=False) | {"readinessProbe": PROBE}
+            ],
+            development_stage="runtime",
+            runtime_stage="runtime",
+            test_stage="test",
+            test_command="sh /app/tests/run.sh",
+            junit_tests_directory="/app/tests-results/",
+        )
+
+
+def body() -> None:
+    with project("results-in-one-place") as fixture:
+        build(fixture)
+
+        with deployed(fixture, "--", "--build_type", "test") as run:
+            expect(
+                run.status != 0,
+                f"a service whose own suite failed fails the run:\n{run}",
+            )
+
+            results = fixture.root / "tests-results"
+            alpha_report = results / "alpha" / "junit.xml"
+            beta_report = results / "beta" / "junit.xml"
+
+            expect(
+                alpha_report.is_file() and beta_report.is_file(),
+                f"both services' results come back to the one place a run "
+                f"collects into: {sorted(p.name for p in results.glob('*')) if results.is_dir() else 'nothing there'}",
+            )
+
+            expect(
+                'failures="1"' in beta_report.read_text(encoding="utf-8"),
+                "the service whose suite failed is identified by its own "
+                "report, under its own name, not folded into an aggregate",
+            )
+            expect(
+                'failures="0"' in alpha_report.read_text(encoding="utf-8"),
+                "and the service whose suite passed is reported too -- its "
+                "report came back exactly like the failing one's, not silence",
+            )
+
+
+check(body)

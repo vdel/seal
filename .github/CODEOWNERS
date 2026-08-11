@@ -1,0 +1,19 @@
+# Who has to approve a change to what. GitHub reads this file from the
+# repository root, .github/ or docs/, and the first one it finds is the only
+# one it reads.
+#
+# The outcome tree is here because the merge gate rests on it: an outcome
+# test that could be edited without review isn't a gate, it's a suggestion --
+# an agent that can't satisfy a failing test can just delete it. Requiring a
+# code owner's approval on any diff touching one is what makes "every outcome
+# test passes" mean the application was fixed. `seal check` refuses a tree
+# this file leaves uncovered; see /docs/guides/merge-gate.md for the half of the
+# gate that lives in this repository's branch-protection settings and can't
+# be checked from a checkout.
+
+# What Seal itself promises an adopting project, and the tests
+# translated from those promises. Owned for the same reason as any other
+# specification: a project that could edit what it claims, to agree with
+# what it does, is claiming nothing.
+/outcomes/ @vdel
+/examples/angular-django/outcomes/ @vdel

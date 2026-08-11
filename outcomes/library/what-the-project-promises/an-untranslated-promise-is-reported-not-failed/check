@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+A promise with no test yet and a translated promise that ran and said
+nothing look the same from a distance -- neither one held up its end -- and
+this checks that the suite tells them apart rather than treating either as
+a stand-in for the other. That distinction is what makes an untranslated
+promise an ordinary state instead of a silent hole in the gate.
+
+Two projects, because the two states this asserts are opposites in how they
+affect the run and the check would blur that by building them side by side
+in one:
+
+- **Nothing but a prompt, and a promise already kept.** Asserts the first
+  half: an untranslated promise does not fail the run, and is listed as
+  exactly what it is -- no test yet, not a failure.
+- **The same, plus one promise this run's runner never reports a point
+  for**, though a `check` file for it exists. That one is translated, so it
+  is *not* the untranslated case -- it is a test that did not run, which is
+  a failure -- and the run fails on account of it while the untranslated
+  promise beside it still doesn't move the needle.
+
+What this reading chose: the silent promise is built by having the tap
+runner skip reporting on it on purpose, rather than making its `check` fail
+outright -- a runner that never says anything about a promise is exactly the
+shape "translated but ran silent" takes in a real failure (an image that
+never started, a container killed mid-stream), and it is the shape this
+promise is contrasted against.
+
+Deliberately not asserted, because the prompt withholds it: that leaving a
+promise untranslated is fine indefinitely, and that an untranslated promise
+is checked in any way -- nothing here runs anything on its behalf.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, check, expect, project  # noqa: E402
+
+KEPT = "#!/bin/sh\nexit 0\n"
+
+# Reports a point for every slug except one ending in "/silent" -- which is
+# translated (it has a `check` file) but never gets a line on the stream,
+# the shape a run that died before reaching it, or an image that never
+# started, would leave behind.
+SKIPS_SILENT = """#!/bin/sh
+set -u
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
+[ "${1:-}" = "--" ] && shift
+reportable=0
+for slug in "$@"; do
+  case "$slug" in
+    */silent) ;;
+    *) reportable=$((reportable + 1)) ;;
+  esac
+done
+echo "1..$reportable"
+number=0
+for slug in "$@"; do
+  case "$slug" in
+    */silent) continue ;;
+  esac
+  number=$((number + 1))
+  check="$here/$slug/check"
+  if "$check"; then
+    echo "ok $number - $slug"
+  else
+    echo "not ok $number - $slug"
+  fi
+done
+"""
+
+
+def line_about(run, promise: str) -> str:
+    lines = [
+        line
+        for line in run.output.splitlines()
+        if line.startswith(f"cli/gating/{promise} ")
+    ]
+    return lines[0] if lines else ""
+
+
+def body() -> None:
+    # A promise with no test yet, beside one that is translated and kept:
+    # the untranslated one does not fail the run.
+    with project("untranslated") as fixture:
+        fixture.tiltfile().service("api", env="GREETING=hello\n")
+        fixture.deployment("api")
+        fixture.codeowners("/outcomes/ @owner\n")
+        fixture.group("cli")
+        fixture.promise("cli", "gating", "known-good", translation={"check": KEPT})
+        fixture.promise("cli", "gating", "not-yet", prompt="# a promise not yet translated\n")
+
+        run = seal("outcomes", "run", "--all", cwd=fixture.root)
+        expect(
+            run.status == 0,
+            f"a promise nothing has been translated from does not fail the run:\n{run}",
+        )
+        expect(
+            "no test yet" in line_about(run, "not-yet"),
+            f"and is reported as exactly that:\n{run}",
+        )
+
+    # The same untranslated promise, now beside one that is translated but
+    # ran silent: the silent one fails the run, and the untranslated one
+    # still doesn't -- which is the distinction this promise is about.
+    with project("silent") as fixture:
+        fixture.tiltfile().service("api", env="GREETING=hello\n")
+        fixture.deployment("api")
+        fixture.codeowners("/outcomes/ @owner\n")
+        fixture.group("cli", run=SKIPS_SILENT)
+        fixture.promise("cli", "gating", "known-good", translation={"check": KEPT})
+        fixture.promise("cli", "gating", "not-yet", prompt="# a promise not yet translated\n")
+        fixture.promise("cli", "gating", "silent", translation={"check": KEPT})
+
+        run = seal("outcomes", "run", "--all", cwd=fixture.root)
+        expect(
+            run.status != 0,
+            f"a translated promise the run never reported on fails the run:\n{run}",
+        )
+
+        untranslated_line = line_about(run, "not-yet")
+        silent_line = line_about(run, "silent")
+        expect(
+            "no test yet" in untranslated_line,
+            f"the untranslated promise is unaffected by the silent one beside it:\n{run}",
+        )
+        expect(
+            "no verdict" in silent_line,
+            f"the silent, translated promise is reported as untested:\n{run}",
+        )
+        expect(
+            "no test yet" not in silent_line and "no verdict" not in untranslated_line,
+            "a promise with no test yet reads differently from one whose test ran and "
+            f"said nothing -- the two are never confused for each other:\n{run}",
+        )
+        expect(
+            "PASS" in line_about(run, "known-good"),
+            f"and a promise that actually was kept is reported as such regardless:\n{run}",
+        )
+
+
+check(body)

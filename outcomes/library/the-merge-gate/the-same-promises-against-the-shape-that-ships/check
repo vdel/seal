@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+The fixture is one project with two Kubernetes overlays -- `dev` and
+`built` -- selected the way any project selects one:
+`select_k8s_overlay()`/`--k8s_overlay` (see tilt/seal/config.Tiltfile).
+Both overlays deploy the same service, `web`, under the same name and port,
+so the *only* difference between the two shapes is what that service
+actually answers with: the `dev` overlay's container is started with
+`-text=dev-shape`, the `built` overlay's with `-text=built-shape`.
+
+One outcome, one prompt, one translation -- `outcomes/api/shape/serves-dev-text`
+-- is registered once and never rewritten between the two runs. It is run
+against `dev` first and then, on the very same tree, against `built`. What
+this establishes is exactly the prompt's three "worth covering" bullets:
+
+- **The promises run against a shape other than the usual one**: the second
+  run deploys `built`, never `dev`.
+- **The verdicts are reported per shape, so a reader can tell which went
+  red**: this check reads each run's own verdict file before the next run
+  overwrites it, and the two are asserted to disagree.
+- **The promises are the same ones, not a variant set**: both runs read
+  `outcomes/api/shape/serves-dev-text` from the one tree this check builds
+  once, and the results directory path each run writes to is asserted
+  identical.
+
+The interesting case is exactly the one the prompt names: the promise --
+"the application serves the development shape's text" -- holds in `dev` and
+is found wanting in `built`. That is not a bug in the fixture; it is what
+"if one holds in development and not in what ships, that is the finding"
+looks like when it is true.
+
+What this reading chose:
+
+- **A `custom` runner with a two-line entrypoint, not `playwright`.** The
+  promise is about which manifest shape is deployed, not about how a
+  promise reaches whatever checks it -- that axis belongs to
+  `what-the-project-promises/a-promise-that-isnt-browser-shaped-is-checked-
+  anyway`, a different epic. A `wget` against `SEAL_BASE_URL` is the
+  smallest container that can tell the two shapes apart, and it is what
+  keeps this check's own runtime from being dominated by a Chromium image
+  it has no need of.
+- **`hashicorp/http-echo` for `web`, not a service this project builds.**
+  What differs between the shapes is a manifest fact (an argument on a
+  container), not anything about an image -- so no `docker_build()` is
+  needed to make the two shapes disagree, and the fixture stays about
+  overlays rather than about builds.
+- **Both overlays share one Deployment and Service *name*.** A promise
+  reached by `http://web:8080` in one shape and `http://web-2:8080` in the
+  other would not be the same promise checked twice; it would be two
+  promises that happen to share a prompt.
+- **The outcome runner's own Deployment is deleted by hand between the two
+  runs.** It is seal's own wiring (`seal-outcomes-api`), not
+  part of either overlay, so `deployed()`'s per-overlay cleanup never
+  reaches it -- and its image and spec are identical for both runs (only
+  `web`'s argument differs), so an unforced second run would find Tilt
+  attaching to the first run's still-live container rather than starting a
+  fresh one, and read back whatever it wrote against `dev`.
+
+Deliberately not asserted, because the prompt withholds it: how much a
+second shape costs (it depends on what the shape changes, and this fixture's
+own difference -- one argument -- is close to the cheapest end of that
+range), and anything about deploying to a real environment rather than a
+second overlay on the same throwaway cluster.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import Project, check, deployed, expect, kubectl, project  # noqa: E402
+from helpers.projects import container  # noqa: E402
+
+WEB_PORT = 8080
+
+# What seal itself names the outcome runner's own Deployment
+# (K8S_NAME_PREFIX + the group's name, see tilt/seal/outcomes.Tiltfile).
+# The overlay this check tears down between the two runs is the project's
+# own "web"/"web-service" objects, never this one -- it belongs to
+# seal's own wiring, not to either overlay, so a project's overlay
+# cleanup never reaches it and it is deleted here by hand.
+RUNNER_DEPLOYMENT = "seal-outcomes-api"
+
+DOCKERFILE = """FROM busybox:1.36
+WORKDIR /outcome
+COPY run.sh /outcome/run.sh
+RUN chmod +x /outcome/run.sh
+ENTRYPOINT ["/outcome/run.sh"]
+"""
+
+# The whole of the 'custom' runner contract (/rfcs/0011-outcome-runners.md):
+# run what is named after '--', write each verdict to
+# /outcome-results/<epic>/<outcome>/passed, write /outcome-results/done, and
+# stay up. What decides pass or fail is a single `wget` against the service
+# this fixture deploys, compared against the text the promise names.
+RUN_SH = """#!/bin/sh
+set -u
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
+[ "${1:-}" = "--" ] && shift
+for slug in "$@"; do
+  dir="/outcome-results/$slug"
+  mkdir -p "$dir"
+  if wget -q -O - "$SEAL_BASE_URL/" | grep -q "dev-shape"; then
+    echo 1 > "$dir/passed"
+  else
+    echo 0 > "$dir/passed"
+  fi
+done
+touch /outcome-results/done
+sleep infinity
+"""
+
+PROMPT = (
+    "# the home page serves the development shape's text\n\n"
+    "Whatever is running behind `web` answers with the text this project's "
+    "development shape was built to serve.\n"
+)
+
+
+def _web(text: str) -> dict:
+    """The one container both overlays deploy, under the same name and port
+    -- differing only in the argument that decides what it answers with."""
+    return container(
+        "web", image="hashicorp/http-echo:1.0", probe=True,
+        args=[f"-listen=:{WEB_PORT}", f"-text={text}"],
+    )
+
+
+def _service_object(name: str) -> dict:
+    return {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": name},
+        "spec": {"selector": {"app": name}, "ports": [{"port": WEB_PORT, "targetPort": WEB_PORT}]},
+    }
+
+
+def _build_fixture(fixture: Project) -> Path:
+    fixture.deployment("web", containers=[_web("dev-shape")], overlay="dev")
+    fixture.manifest("dev", "web-service", _service_object("web"))
+    fixture.deployment("web", containers=[_web("built-shape")], overlay="built")
+    fixture.manifest("built", "web-service", _service_object("web"))
+
+    fixture.registers_outcomes(
+        base_url=f"http://web:{WEB_PORT}", waits_for=["web"], overlay="dev"
+    )
+    fixture.runners({"name": "api", "runner_type": "custom"})
+    fixture.write("outcomes/api/Dockerfile", DOCKERFILE)
+    fixture.write("outcomes/api/run.sh", RUN_SH, executable=True)
+    results_dir = fixture.promise(
+        "api", "shape", "serves-dev-text",
+        prompt=PROMPT,
+        translation={
+            "note.md": (
+                "Checked by outcomes/api/run.sh: it curls SEAL_BASE_URL and greps "
+                "the response for the text the development shape serves.\n"
+            )
+        },
+    )
+    fixture.codeowners("/outcomes/ @owner\n")
+    return results_dir
+
+
+def body() -> None:
+    with project("shape-that-ships") as fixture:
+        outcome_dir = _build_fixture(fixture)
+        translation_before = sorted(path.name for path in outcome_dir.iterdir())
+        results_root = fixture.root / "tests-results" / "outcomes" / "api" / "shape" / "serves-dev-text"
+
+        with deployed(fixture, "--", "--k8s_overlay", "dev", overlay="dev") as dev_run:
+            expect(dev_run.status == 0, f"the promise holds against the shape it was built in:\n{dev_run}")
+            dev_verdict = (results_root / "passed").read_text(encoding="utf-8").strip()
+            dev_results_dir = results_root
+
+        # The runner's own Deployment is seal's wiring, not part of
+        # either overlay, so deployed()'s cleanup above never reaches it: an
+        # unchanged image and spec would otherwise leave Tilt attaching to
+        # the first run's still-live pod for the second run, reading back
+        # whatever it wrote when the home page still answered "dev-shape".
+        kubectl("delete", "deployment", RUNNER_DEPLOYMENT, "--ignore-not-found", timeout=120)
+
+        with deployed(fixture, "--", "--k8s_overlay", "built", overlay="built") as built_run:
+            expect(
+                built_run.status != 0,
+                f"the same promise, checked against the shape that ships, finds it wanting:\n{built_run}",
+            )
+            built_verdict = (results_root / "passed").read_text(encoding="utf-8").strip()
+            built_results_dir = results_root
+
+        expect(
+            dev_verdict == "1" and built_verdict == "0",
+            f"the verdicts disagree per shape, and say which shape held: dev={dev_verdict!r} "
+            f"built={built_verdict!r}",
+        )
+        expect(
+            dev_results_dir == built_results_dir,
+            "both runs read the results of the same outcome directory, not two different "
+            f"ones: dev read {dev_results_dir}, built read {built_results_dir}",
+        )
+        translation_after = sorted(path.name for path in outcome_dir.iterdir())
+        expect(
+            translation_after == translation_before,
+            "the promise's own prompt and translation are untouched between the two runs "
+            f"-- one tree, read twice, not a variant rewritten for the second shape: "
+            f"before={translation_before} after={translation_after}",
+        )
+
+
+check(body)

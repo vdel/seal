@@ -1,0 +1,52 @@
+[project]
+name = "api"
+version = "0.1.0"
+description = "Seal API: a fresh Django project ready to be built upon"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # -- <Web server>
+    "django",
+    "gunicorn>=23.0.0",
+    # -- </Web server>
+    # -- <Celery>
+    "celery[redis]>=5.4.0",
+    "django-celery-beat>=2.7.0",
+    "valkey>=6.0.2",
+    # -- </Celery>
+    # -- <Database>
+    "psycopg[binary]>=3.3.2",
+    # -- </Database>
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.4.1",
+    "pytest-django==4.11.1",
+    "pytest-cov==6.2.1",
+    "flake8==7.3.0",
+    "Flake8-pyproject==1.2.3",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["*"]
+
+[tool.pytest.ini_options]
+addopts = "-vv --disable-warnings"
+pythonpath = [
+  "src"
+]
+DJANGO_SETTINGS_MODULE = "config.settings"
+
+[tool.flake8]
+ignore = ['E501', 'W503', 'E731']
+exclude = [
+    '.git',
+    '__pycache__',
+    '.pytest_cache',
+    '.venv',
+    'venv',
+    'build',
+    'dist',
+]

@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+The mechanism this promise turns on already exists: `bin/install-seal-
+skills --check` computes the same plan an install would apply -- which files
+would be written, and why -- and reports it instead of writing anything,
+exiting non-zero when the plan is non-empty (see the script's own "Plan"
+section, and `python/tests/test_agent_skills.py`'s
+`test_check_reports_what_is_missing_without_writing_it`). This check is a
+translation of that mechanism into the outcome's own words, not a new
+feature: it never inspects a diff itself, and never touches `.claude/` in
+this checkout.
+
+Both halves the prompt asks for are asserted, one right after the other
+against the same throwaway project:
+
+- **A project whose installed instructions match what ships is told they
+  match.** Asserted immediately after a clean install: `--check` exits `0`
+  and says so.
+- **One whose instructions have fallen behind is told which.** Asserted by
+  editing two installed files by hand -- the shape a project would be in if
+  someone touched what the installer manages, or if what ships moved on
+  without a re-run -- and reading the same `--check` name both of them and
+  exit non-zero.
+
+Nobody diffs anything to get either answer: this check never reads the
+source `.claude/` and the target's copy side by side and compares them
+itself. It only ever runs the installer's own `--check` and reads what it
+printed, which is the whole of "without anybody comparing files by hand."
+
+What this reading chose: literal content edited in place, rather than a
+version stamp -- the installer's plan is computed from a content diff (`diff
+-r -q`), not from a stamp any file carries, so an edited file is the
+faithful shape of "fallen behind" here. Two files at once (a skill body and
+the managed `CLAUDE.md` block), so the assertion is that drift is named file
+by file rather than only as a single yes/no.
+
+Deliberately not asserted, because the prompt withholds it: that anything is
+updated automatically -- this check re-runs `--check`, never a plain
+install, once drift exists -- and whether the newer instructions would suit
+this project better.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import check, expect, project  # noqa: E402
+from helpers.installer import install_skills  # noqa: E402
+
+SKILL_FILE = Path(".claude/skills/seal/SKILL.md")
+CLAUDE_MD = Path("CLAUDE.md")
+
+
+def body() -> None:
+    with project("falls-behind") as fixture:
+        installed = install_skills(fixture.root)
+        expect(installed.status == 0, f"installing into a fresh project succeeds:\n{installed}")
+
+        matching = install_skills(fixture.root, "--check")
+        expect(
+            matching.status == 0,
+            f"a project whose installed instructions match what ships is told they "
+            f"match, without anybody comparing files by hand:\n{matching}",
+        )
+        expect(
+            "up to date" in matching.output,
+            f"the answer says the instructions match, not just that nothing failed:\n{matching}",
+        )
+
+        # Two files edited by hand: the shape of a project whose installed
+        # copy no longer says what the shipped one does, whether because
+        # someone touched it or because what ships moved on since.
+        skill_path = fixture.root / SKILL_FILE
+        original_skill = skill_path.read_text(encoding="utf-8")
+        skill_path.write_text(
+            original_skill.replace("seal ci", "seal legacy-ci"), encoding="utf-8"
+        )
+
+        claude_md_path = fixture.root / CLAUDE_MD
+        original_claude_md = claude_md_path.read_text(encoding="utf-8")
+        claude_md_path.write_text(
+            original_claude_md.replace(
+                "## Seal", "## Seal\n\nEdited by hand, out of date."
+            ),
+            encoding="utf-8",
+        )
+
+        drifted = install_skills(fixture.root, "--check")
+        expect(
+            drifted.status != 0,
+            f"a project whose installed instructions have fallen behind is told so:\n{drifted}",
+        )
+        expect(
+            "skills/seal" in drifted.output,
+            f"the answer names the skill that fell behind:\n{drifted}",
+        )
+        expect(
+            str(CLAUDE_MD) in drifted.output,
+            f"and the CLAUDE.md block that fell behind too -- both are named, not just one:\n"
+            f"{drifted}",
+        )
+
+        # Restoring what was edited, by hand, is what puts the project back
+        # in the "matches" state -- nothing here updates anything for it.
+        skill_path.write_text(original_skill, encoding="utf-8")
+        claude_md_path.write_text(original_claude_md, encoding="utf-8")
+        restored = install_skills(fixture.root, "--check")
+        expect(
+            restored.status == 0,
+            f"putting the edited files back is enough to match what ships again:\n{restored}",
+        )
+
+
+check(body)

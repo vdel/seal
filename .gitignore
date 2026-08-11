@@ -1,0 +1,88 @@
+# --- Generated ---
+.workspace
+
+# --- OS / Editor ---
+.DS_Store
+Thumbs.db
+
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- Logs ---
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Environment / Secrets ---
+# services/<name>/.env is committed on purpose: it holds only plain dev
+# placeholders and `pass://...` references, never a resolved secret -- see
+# /docs/credentials.md at the repo root. Nothing to ignore here.
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Testing / tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+tests-results/
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Django
+*.sqlite3
+media/
+staticfiles/
+services/*/src/static/
+
+# --- Node / npm / Angular ---
+node_modules/
+
+# Angular build and cache
+.angular/
+.angular/cache/
+
+# Frontend test/build outputs
+coverage/
+.nyc_output/
+.eslintcache
+.stylelintcache
+
+# Package manager caches
+.npm/
+.pnpm-store/
+.yarn/
+
+# Generic frontend build outputs
+tmp/
+temp/
+out/
+
+
+# Sphinx build output for the user documentation in docs/.
+docs/_build/

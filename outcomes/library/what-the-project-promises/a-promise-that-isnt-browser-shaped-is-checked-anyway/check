@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+A project's promises are not all of one kind, and neither are the things
+that check them. The fixture here is a project whose promises are checked
+by programs it brought: one an awk program, one a shell script, neither a
+browser and neither written in the language this library is.
+
+What the check establishes is that such a group is not a second-class one.
+It runs, it is reported like any other, and everything downstream reads its
+results the same way -- so a project whose promises are about a worker, an
+API or a command-line tool is not left writing them down and hoping.
+
+What this reading chose, where the prompt left it open:
+
+- **Two languages, neither the library's.** "What it is written in is not
+  constrained" is only established by more than one, and only interesting
+  if none of them is the one the library would have picked.
+- **Downstream is asserted through the report, setting a test aside, and
+  running a failure again.** Those are what a project actually uses on a
+  red suite. The regression loop reads the same results tree and is not run
+  here: it drives an agent session, and nothing in this suite starts one.
+
+Deliberately not asserted, because the prompt withholds it: that Seal
+validates what a project's own runner does -- it is taken at its word --
+and that every kind of promise is equally cheap to check.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, check, expect, project  # noqa: E402
+
+# A promise checked by an awk program: no browser, and not the language the
+# library is written in.
+IN_AWK = """#!/usr/bin/awk -f
+BEGIN { exit 0 }
+"""
+
+# And one checked by a shell script, which fails.
+IN_SHELL = """#!/bin/sh
+echo "the worker did not drain its queue" >&2
+exit 1
+"""
+
+BROUGHT_ITS_OWN_RUNNER = """#!/bin/sh
+# What this project brought: it decides what a promise's test is called and
+# what starts it, and says what it found on the stream.
+set -u
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
+[ "${1:-}" = "--" ] && shift
+echo "1..$#"
+number=0
+for slug in "$@"; do
+  number=$((number + 1))
+  if "$here/$slug/its-own-test"; then
+    echo "ok $number - $slug"
+  else
+    echo "not ok $number - $slug"
+  fi
+done
+"""
+
+
+def line_about(run, promise: str) -> str:
+    lines = [
+        line
+        for line in run.output.splitlines()
+        if line.startswith(f"worker/queues/{promise} ")
+    ]
+    return lines[0] if lines else ""
+
+
+def body() -> None:
+    with project("not-browser-shaped") as fixture:
+        fixture.tiltfile().service("worker", env="QUEUE=jobs\n")
+        fixture.deployment("worker")
+        fixture.codeowners("/outcomes/ @owner\n")
+        fixture.group("worker", run=BROUGHT_ITS_OWN_RUNNER)
+        fixture.promise("worker", "queues", "a-job-is-taken-once")
+        fixture.write("outcomes/worker/queues/a-job-is-taken-once/its-own-test", IN_AWK, executable=True)
+        fixture.promise("worker", "queues", "a-queue-is-drained")
+        fixture.write("outcomes/worker/queues/a-queue-is-drained/its-own-test", IN_SHELL, executable=True)
+
+        listed = seal("outcomes", cwd=fixture.root)
+        expect(
+            "no test yet" not in listed.output,
+            f"a test the project brought is a test as far as the listing is concerned:\n{listed}",
+        )
+
+        run = seal("outcomes", "run", "--all", cwd=fixture.root)
+        expect(
+            "PASS" in line_about(run, "a-job-is-taken-once"),
+            f"a promise checked by an awk program is reported like any other:\n{run}",
+        )
+        expect(
+            "FAIL" in line_about(run, "a-queue-is-drained"),
+            f"and so is one checked by a shell script:\n{run}",
+        )
+        expect(
+            run.status != 0,
+            f"a promise this project's own runner found broken fails the run:\n{run}",
+        )
+        expect(
+            "the worker did not drain its queue" in run.output,
+            f"what that runner said about the failure is kept:\n{run}",
+        )
+
+        # Downstream, unchanged: a failure can be run again on its own, and
+        # a test nobody trusts yet can be set aside with a reason.
+        confirmed = seal("outcomes", "run", "--all", "--confirm", cwd=fixture.root)
+        expect(
+            "confirmed" in line_about(confirmed, "a-queue-is-drained"),
+            f"a failure here is confirmed the way any other is:\n{confirmed}",
+        )
+
+        fixture.write(
+            "outcomes/worker/queues/a-queue-is-drained/quarantine.md",
+            "# the queue fixture is not deterministic yet\n\nIt drains late about one run in ten.\n",
+        )
+        quarantined = seal("outcomes", "run", "--all", cwd=fixture.root)
+        expect(
+            quarantined.status == 0,
+            f"a promise set aside with a reason stops failing the run here too:\n{quarantined}",
+        )
+        expect(
+            "PASS" not in line_about(quarantined, "a-queue-is-drained"),
+            f"and is still never reported as kept:\n{quarantined}",
+        )
+
+
+check(body)

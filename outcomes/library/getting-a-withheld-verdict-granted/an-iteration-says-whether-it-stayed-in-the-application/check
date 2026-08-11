@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+`seal outcomes touched` is the whole of what this asserts on
+(cmd_outcomes_touched in seal.py, outcome_changes.py): a diff between
+a git ref and the working tree, restricted to the outcome tree, with staged,
+unstaged and untracked paths all counted. Nothing here is agent-shaped --
+what changed and what a session says about what it changed are asked as two
+different questions, and this check only ever asks the first.
+
+So each edit below is made by `check()`'s own Python -- never a fix an
+agent decided on -- and it is committed with a message that says the
+opposite of what the diff actually holds. That is the point: the prompt's
+"the answer comes from what changed, not from what anybody said about it"
+is asserted by making the two disagree and reading which one the command
+sides with. Every commit and edit is real -- a real repository, a real
+`git diff` underneath -- so this reads the command's true behaviour, not a
+description of what it is meant to do.
+
+Three edits, since "reaches the specification" is not only "an existing
+file changed":
+
+- **An application file.** Comes back saying so, in as many words.
+- **An existing file under `outcomes/`, edited.** Named exactly.
+- **A new file added under `outcomes/`, never committed.** Also named --
+  the diff this reads from counts an untracked path the same as a tracked
+  one, so a promise nobody has reviewed yet is not a promise this command
+  is silent about.
+
+What this reading chose, where the prompt left it open:
+
+- **`--since HEAD` after each commit.** Each edit is asked about on its
+  own, against the commit immediately before it, so one assertion's
+  failure can never be explained by an earlier edit's diff bleeding into
+  it.
+- **The application file lives under `services/`,** the shape a real
+  project's own code takes, rather than an arbitrary path outside
+  `outcomes/` -- there being no cluster behind it changes nothing about
+  what the diff sees.
+
+Deliberately not asserted, because the prompt withholds it: that touching
+the specification here was wrong, or that the application edit was a good
+one -- the prompt is explicit that this reports a fact about a diff, not a
+verdict on either kind of change.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, check, expect, project  # noqa: E402
+
+APPLICATION = "services/api/app.py"
+PROMISE_CHECK = "outcomes/cli/gating/a-promise/check"
+NEW_FIXTURE = "outcomes/cli/gating/a-promise/extra-fixture.txt"
+
+
+def body() -> None:
+    with project("stayed-in-the-application") as fixture:
+        fixture.write(APPLICATION, "def handle():\n    return 'ok'\n")
+        fixture.group("cli")
+        fixture.promise(
+            "cli", "gating", "a-promise", translation={"check": "#!/bin/sh\nexit 0\n"}
+        )
+        fixture.codeowners("/outcomes/ @owner\n")
+        fixture.repository()
+
+        # An application-only round -- committed under a message that
+        # claims the opposite of what it touched, so what settles this is
+        # the diff and nothing a commit message asserts about itself.
+        fixture.write(APPLICATION, "def handle():\n    return 'ok, differently'\n")
+        stayed = seal("outcomes", "touched", "--since", "HEAD", cwd=fixture.root)
+        expect(
+            stayed.status == 0,
+            f"a round that only edited the application is not held up:\n{stayed}",
+        )
+        expect(
+            "reaches nothing" in stayed.output,
+            f"and it says so, rather than leaving that to be inferred:\n{stayed}",
+        )
+        fixture.commit(
+            "definitely did not touch the specification, this round stayed in "
+            "the application"
+        )
+
+        # An existing translation, edited -- named exactly, whatever the
+        # commit that follows claims about it.
+        fixture.write(PROMISE_CHECK, fixture.read(PROMISE_CHECK) + "\n# a change\n")
+        reached = seal("outcomes", "touched", "--since", "HEAD", cwd=fixture.root)
+        expect(
+            reached.status != 0,
+            f"a round that edited a translation is held up:\n{reached}",
+        )
+        expect(
+            PROMISE_CHECK in reached.output,
+            f"and the exact path it reached is named:\n{reached}",
+        )
+        fixture.commit("just a small application tweak, nothing under outcomes/")
+
+        # A file added under the tree and never committed -- still named,
+        # because the diff this reads from counts an untracked path the
+        # same as a tracked one.
+        fixture.write(NEW_FIXTURE, "extra fixture data\n")
+        added = seal("outcomes", "touched", "--since", "HEAD", cwd=fixture.root)
+        expect(
+            added.status != 0,
+            f"an added, uncommitted file under the tree still counts as reached:\n{added}",
+        )
+        expect(
+            NEW_FIXTURE in added.output,
+            f"and it too is named exactly:\n{added}",
+        )
+
+
+check(body)

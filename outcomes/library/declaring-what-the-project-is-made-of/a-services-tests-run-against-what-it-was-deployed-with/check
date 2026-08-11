@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+A service's own suite runs inside the container that was deployed, against
+the state and the credentials that deployment gave it -- not against
+substitutes, and not during the image build, where neither exists.
+
+The evidence is chosen so that a suite which ran anywhere else could not
+produce it. The fixture's tests write down two things before deciding
+anything: the state their service's reset put in the container, and the
+value the deployment provisioned for a key the `.env` declares. A run
+during the build has neither. So a check reading both back, from the
+report that came home, is reading a suite that ran where it was promised
+to run.
+
+What this reading chose: the state is a file and the credential is a
+literal. What a service's store is, and where its values come from, are
+the project's own business -- the promise is about *what the suite reaches*,
+not about what it reaches into.
+
+The run is a test build, because that is the run a service's own suite is
+part of: a development build registers no test run at all, so asking one
+for a report would be asking for something that was never going to exist.
+
+Deliberately not asserted, because the prompt withholds it: what a
+service's tests assert, how many there are, or what framework runs them --
+and that a service must have tests at all. The project here carries a
+second service declaring none, which nothing is made to fix.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import check, deployed, expect, kubectl, project  # noqa: E402
+from helpers import ledger  # noqa: E402
+
+
+def body() -> None:
+    with project("service-tests") as fixture:
+        ledger.build(fixture)
+
+        with deployed(fixture, "--", "--build_type", "test") as run:
+            expect(
+                run.status == 0,
+                f"a project whose service has tests of its own comes up, and those "
+                f"tests pass where they were promised to run:\n{run}",
+            )
+
+            # Where the suite's report came home to: one place, named for
+            # the service whose suite it was.
+            report = fixture.root / "tests-results" / "ledger"
+            expect(
+                (report / "junit.xml").is_file(),
+                f"the service's own report comes back: {sorted(report.glob('*')) if report.is_dir() else 'nothing'}",
+            )
+
+            saw = (report / ledger.WHAT_IT_SAW).read_text(encoding="utf-8")
+            expect(
+                f"password={ledger.PASSWORD}" in saw,
+                f"the suite read the credential its deployment provisioned, not a "
+                f"placeholder an image build could have baked in:\n{saw}",
+            )
+            expect(
+                f"state={ledger.BASELINE}" in saw,
+                f"and reached the state this service was deployed with:\n{saw}",
+            )
+
+            # A service that declares no tests is not made to have any, and
+            # is running like anything else.
+            plain = kubectl(
+                "get", "deploy", "plain", "-o", "jsonpath={.status.readyReplicas}"
+            )
+            expect(
+                plain.stdout.strip() not in ("", "0"),
+                f"a service declaring no suite still serves:\n{plain}",
+            )
+
+
+check(body)

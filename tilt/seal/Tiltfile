@@ -1,0 +1,57 @@
+# seal -- this repo's Tilt extension: generic project config,
+# credential-to-Secret resolution, and CI test-result reporting. The one
+# extension a project registers; everything else it needs, including
+# /tilt/docker_build's cached_docker_build(), seal reaches for itself
+# (see /tilt/README.md at the repo root).
+#
+# This file wires together the internal Tiltfiles below (the logic itself
+# lives in config.Tiltfile / resources.Tiltfile /
+# tests.Tiltfile / build.Tiltfile / outcomes.Tiltfile -- see README.md for
+# what each does) and re-exports only what a project's own Tiltfile needs to
+# call directly: select_k8s_overlay(), seal_service(), reset_resource_name(),
+# tests_run_resource_name(), register_outcome_runner(), and
+# k8s_overlay/publish_images (needed for the odd bit of project-level
+# branching outside seal_service() -- see examples/angular-django/Tiltfile).
+# Everything else those files define (register_syncback(),
+# seal_resource_name(), PROJECT_ROOT, build_type) is wired
+# together between them directly
+# (see their own load() statements) and never needed from outside seal
+# itself.
+#
+# Deliberately load_dynamic(), not load(): Starlark only treats a name as
+# part of *this* module's own exportable globals if it's explicitly defined
+# here -- a name merely re-imported via a `load()` statement doesn't count,
+# even if re-bound to itself, so `load('ext://seal', 'k8s_overlay')`
+# from a caller fails with "name k8s_overlay not found in module
+# ext://seal" if plain load() is used here instead.
+# load_dynamic() sidesteps that: it returns a plain dict, so pulling a name
+# out of it is a genuine expression, making the resulting global a real,
+# re-exportable definition of this module's own.
+_config = load_dynamic('./config.Tiltfile')
+k8s_overlay = _config['k8s_overlay']
+publish_images = _config['publish_images']
+select_k8s_overlay = _config['select_k8s_overlay']
+
+# build.Tiltfile composes config.Tiltfile/tests.Tiltfile and
+# /tilt/docker_build's cached_docker_build() into one call -- see its own
+# docstring.
+_build = load_dynamic('./build.Tiltfile')
+seal_service = _build['seal_service']
+
+# Re-exported so a project can name a service's reset resource without
+# hardcoding the 'seal_reset_<name>' spelling -- what an end-to-end test
+# resource puts in its own resource_deps (see build.Tiltfile).
+reset_resource_name = _build['reset_resource_name']
+
+# Same, for the resource that runs a service's own tests inside its running
+# container -- what anything that must not overlap with that run names. Only
+# a service that declared a `test_command` has one. Taken from
+# tests.Tiltfile, which build.Tiltfile has already load()ed by now, so this
+# reaches the same module rather than evaluating a second copy of it.
+_tests = load_dynamic('./tests.Tiltfile')
+tests_run_resource_name = _tests['tests_run_resource_name']
+
+# The project's whole outcome tree, wired in by one call from its root
+# Tiltfile -- see outcomes.Tiltfile and /rfcs/0010-outcome-tree.md.
+_outcomes = load_dynamic('./outcomes.Tiltfile')
+register_outcome_runner = _outcomes['register_outcome_runner']

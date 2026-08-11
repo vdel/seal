@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+The promise is about what an agent finds installed in a project, not about
+whether an agent reads or follows it -- the prompt says so outright ("What
+this does not claim: that an agent will follow them"). So nothing here
+starts an agent, or anything agent-shaped: this check only ever runs
+`bin/install-seal-skills` and reads what it wrote to disk, the same
+way `seal outcomes translate` said `.claude/` is installed rather than
+remembered per session.
+
+Three things the prompt lists as worth covering, each asserted directly:
+
+- **A project that adopted Seal carries the instructions.** Asserted
+  by installing into a throwaway project and finding the entry skill, the
+  subagents, and the `CLAUDE.md` pointer block all present.
+- **They are the same in any project that adopted it.** Asserted by
+  installing into a second, unrelated throwaway project and comparing every
+  installed file byte-for-byte against the first. Nothing here depends on
+  which project asked -- a difference between the two would mean the
+  installer is generating something per-project rather than delivering the
+  same fixed content, which is exactly the thing this promise rules out.
+- **They say what the tools actually do.** Asserted by checking that the
+  installed instructions contain real command names Seal's CLI
+  actually dispatches (`up`, `ci`) rather than only prose describing them --
+  a check that could pass on a page of placeholders is not checking this.
+
+What this reading chose: two fresh projects built by `helpers.project()`,
+neither given a Tiltfile or any services, because this promise is about
+`.claude/` and `CLAUDE.md`, not about the project's own shape -- and giving
+it one would risk the check passing because of something particular to that
+shape rather than to what the installer does for any project.
+
+Deliberately not asserted, because the prompt withholds it: that an agent
+reads, understands, or acts on any of this, and that the installed
+instructions are a complete account of the project -- they cover Seal,
+which is all this promise is about.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import check, expect, project  # noqa: E402
+from helpers.installer import install_skills  # noqa: E402
+
+# Real subcommands the CLI dispatches (see python/src/seal/seal.py).
+# Standing in for "the installed instructions describe this application's
+# actual tools" without pinning this check to the CLI's full surface, which
+# is free to grow without this promise changing.
+REAL_COMMANDS = ("seal up", "seal ci")
+
+
+def installed_files(root: Path) -> dict[str, bytes]:
+    """Everything the installer put in this project, `.claude/` and
+    `CLAUDE.md` alike, keyed the same way regardless of which project it
+    came from -- which is what makes two projects' results comparable."""
+    files: dict[str, bytes] = {}
+    claude_dir = root / ".claude"
+    for path in sorted(claude_dir.rglob("*")) if claude_dir.is_dir() else []:
+        if path.is_file():
+            files[str(Path(".claude") / path.relative_to(claude_dir))] = path.read_bytes()
+    claude_md = root / "CLAUDE.md"
+    if claude_md.is_file():
+        files["CLAUDE.md"] = claude_md.read_bytes()
+    return files
+
+
+def body() -> None:
+    with project("agent-finds-it") as first, project("agent-finds-it-too") as second:
+        installed = install_skills(first.root)
+        expect(
+            installed.status == 0,
+            f"installing into a project that has adopted Seal succeeds:\n{installed}",
+        )
+
+        first_files = installed_files(first.root)
+        expect(
+            ".claude/skills/seal/SKILL.md" in first_files,
+            "the entry skill is carried into a project that adopted Seal",
+        )
+        expect(
+            ".claude/agents/seal-outcome-translator.md" in first_files,
+            "the subagents are carried in too, not only the skills",
+        )
+        expect(
+            "CLAUDE.md" in first_files,
+            "something points at the installed instructions from the project's own CLAUDE.md",
+        )
+
+        instructions = "\n".join(
+            content.decode("utf-8", errors="ignore")
+            for name, content in first_files.items()
+            if name.endswith(".md")
+        )
+        for command in REAL_COMMANDS:
+            expect(
+                command in instructions,
+                "the installed instructions say what the tools actually do -- expected "
+                f"to find the real command {command!r} somewhere in them",
+            )
+
+        second_install = install_skills(second.root)
+        expect(
+            second_install.status == 0,
+            f"installing into a second, unrelated project succeeds:\n{second_install}",
+        )
+        second_files = installed_files(second.root)
+
+        expect(
+            set(first_files) == set(second_files),
+            "the same files are installed into any project that adopted Seal -- "
+            f"only in the first: {sorted(set(first_files) - set(second_files))}, "
+            f"only in the second: {sorted(set(second_files) - set(first_files))}",
+        )
+        differing = sorted(
+            name for name, content in first_files.items() if second_files.get(name) != content
+        )
+        expect(
+            not differing,
+            "an agent finds the same instructions byte-for-byte in any project that "
+            f"adopted Seal, not something generated per project -- these differed: "
+            f"{differing}",
+        )
+
+
+check(body)

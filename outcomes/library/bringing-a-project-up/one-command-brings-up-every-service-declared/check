@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+One command, from a checkout, brings up every service the project declares
+-- and the part worth translating is *every*, together with what happens
+when the set changes. A check that brought one fixed project up would
+establish that a list works, not that there is no second list: the promise
+is that a service cannot be half-added, because the project's own structure
+is the only place its services are named.
+
+So the fixture is asked the question three times, from a clean cluster each
+time:
+
+- three services, all running afterwards -- not most of them
+- a fourth added, with nothing else in the project told about it
+- one taken away, with nothing else told about that either
+
+What this reading chose: the services are as thin as a service can be, one
+container each serving one page. What a service *does* is not what this
+promise is about, and a fixture that did anything would spend the run's
+time on it.
+
+Deliberately not asserted, because the prompt withholds it: how long it
+takes, what order services start in, and that the command is all a machine
+needs -- a container runtime has to be there, and what is promised is that
+nothing *else* is a step somebody has to know about.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import check, deployed, expect, kubectl, project  # noqa: E402
+from helpers.projects import container  # noqa: E402
+
+SERVES = """FROM busybox:1.36
+RUN mkdir -p /www && printf 'serving\\n' > /www/index.html
+CMD ["httpd", "-f", "-p", "8080", "-h", "/www"]
+"""
+
+PROBE = {"httpGet": {"path": "/", "port": 8080}, "periodSeconds": 2, "failureThreshold": 30}
+
+FIRST = ("alpha", "bravo", "charlie")
+ADDED = "delta"
+
+
+def declare(fixture, name: str) -> None:
+    fixture.service(name, env="")
+    fixture.deploys(
+        name,
+        SERVES,
+        containers=[container(name, image=name, probe=False) | {"readinessProbe": PROBE}],
+    )
+
+
+def running() -> set[str]:
+    """Which of this project's services the cluster is actually running."""
+    listed = kubectl(
+        "get", "deploy", "-o",
+        r"jsonpath={range .items[*]}{.metadata.name}={.status.readyReplicas}{'\n'}{end}",
+    )
+    return {
+        line.split("=")[0]
+        for line in listed.stdout.splitlines()
+        if line.strip() and line.split("=")[1] not in ("", "0")
+    }
+
+
+def body() -> None:
+    with project("every-service") as fixture:
+        fixture.codeowners("* @owner\n")
+        for name in FIRST:
+            declare(fixture, name)
+
+        with deployed(fixture) as run:
+            expect(run.status == 0, f"one command brings the project up:\n{run}")
+            expect(
+                running() >= set(FIRST),
+                f"every service the project declares is running, not most of them: "
+                f"declared {sorted(FIRST)}, running {sorted(running())}",
+            )
+
+        # A service added to the project. Nothing else is told: there is
+        # nowhere else it could have been told.
+        declare(fixture, ADDED)
+        with deployed(fixture) as run:
+            expect(run.status == 0, f"the run after a service was added succeeds:\n{run}")
+            expect(
+                running() >= set(FIRST) | {ADDED},
+                f"a service added to the project comes up on the next run: "
+                f"running {sorted(running())}",
+            )
+
+        # And one taken away. Declaring a service is the whole of adding it,
+        # so undeclaring it is the whole of removing it.
+        fixture.stops_deploying(FIRST[0])
+        with deployed(fixture) as run:
+            expect(run.status == 0, f"the run after a service was removed succeeds:\n{run}")
+            afterwards = running()
+            expect(
+                FIRST[0] not in afterwards,
+                f"a service the project no longer declares stops coming up: "
+                f"running {sorted(afterwards)}",
+            )
+            expect(
+                afterwards >= set(FIRST[1:]) | {ADDED},
+                f"and the ones it still declares are still running: "
+                f"running {sorted(afterwards)}",
+            )
+
+
+check(body)

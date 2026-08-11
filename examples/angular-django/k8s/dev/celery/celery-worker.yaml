@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: celery-worker
+  template:
+    metadata:
+      labels:
+        app: celery-worker
+    spec:
+      containers:
+      - name: celery-worker
+        image: example-api
+        command: ["uv", "run", "celery", "-A", "config", "worker", "--loglevel=info"]
+        # DJANGO_SECRET_KEY / DEBUG are injected from services/api/.env,
+        # which seal fills into the object this overlay declares and
+        # annotates (../web/api/secrets.yaml). Which object carries
+        # which key is the overlay's own statement, not seal's:
+        # k8s/non-dev splits them across a ConfigMap and a Secret, and
+        # repoints this container at both. See /docs/credentials.md.
+        envFrom:
+          - secretRef:
+              name: example-api-secrets
+        # DATABASE_URL / CELERY_* are marked `k8s://` in services/api/.env:
+        # they point at the postgres/valkey Services bundled in this same
+        # overlay (k8s/dev/postgres, k8s/dev/valkey), so they're set here
+        # directly rather than resolved from a secret store.
+        env:
+        - name: DATABASE_URL
+          value: postgresql://app:app-dev-password@postgres:5432/app
+        - name: CELERY_BROKER_URL
+          value: redis://valkey:6379/0
+        - name: CELERY_RESULT_BACKEND
+          value: redis://valkey:6379/0
+        readinessProbe:
+          exec:
+            # A real round-trip: `inspect ping` reaches this worker through
+            # the broker and waits for its reply, so it only passes once
+            # valkey is reachable *and* this worker is consuming. A port or
+            # process check would pass while the worker was still failing to
+            # connect. `celery@<hostname>` is the default node name, and the
+            # hostname is the pod name.
+            command:
+            - sh
+            - -c
+            - uv run celery -A config inspect ping --timeout 5 -d "celery@$(hostname)"
+          # The worker has to boot Django and connect to the broker first;
+          # the generous delay/threshold keeps a slow start from being
+          # reported as a failure.
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 6
+        # resources:
+        #   requests:
+        #     memory: "500Mi"
+        #     cpu: "200m"
+        #   limits:
+        #     memory: "2Gi"
+        #     cpu: "500m"

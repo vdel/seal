@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+A promise that failed is run again, on its own, and the result of that
+second run is attached to the failure. The fixture is a project with two
+failures of different kinds: one that fails however often it is asked, and
+one that fails the first time and holds afterwards -- which is the case the
+whole thing exists to tell apart.
+
+The assertion this check is most careful about is the one the prompt is
+most careful about: **it changes no verdict**. A failure that did not
+reproduce still fails the run. A translation that read this promise as "a
+flaky failure is excused" would encode its opposite, so the exit status is
+asserted alongside every distinction the second run draws.
+
+What this reading chose, where the prompt left it open:
+
+- **The group runs on the machine, so "from a baseline" is asserted as far
+  as a project without a session can establish it**: the run says it is
+  going again from a reset, and says plainly that a group it does not
+  deploy has no session to put back. That a declared reset is triggered and
+  waited for is a different promise, with a cluster behind it.
+- **What is kept is asserted by looking for it**, not by reading the run's
+  own account of what it kept: the interesting case is the failure that did
+  not reproduce, and it is only interesting if the run that failed is still
+  there to compare against the one that held.
+
+Deliberately not asserted, because the prompt withholds it: that a failure
+is retried until it passes -- once, and only what was red -- and whether a
+given failure really was flake.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, check, expect, project  # noqa: E402
+
+KEPT = "#!/bin/sh\nexit 0\n"
+ALWAYS_FAILS = "#!/bin/sh\nexit 1\n"
+
+# Fails once and holds afterwards: a promise that does not reproduce.
+FAILS_ONCE = """#!/bin/sh
+marker="$(dirname "$0")/already-failed-once"
+if [ -e "$marker" ]; then
+  exit 0
+fi
+: > "$marker"
+exit 1
+"""
+
+
+def line_about(run, promise: str) -> str:
+    lines = [
+        line
+        for line in run.output.splitlines()
+        if line.startswith(f"cli/gating/{promise} ")
+    ]
+    return lines[0] if lines else ""
+
+
+def body() -> None:
+    with project("confirming") as fixture:
+        fixture.tiltfile().service("api", env="GREETING=hello\n")
+        fixture.deployment("api")
+        fixture.codeowners("/outcomes/ @owner\n")
+        fixture.group("cli")
+        fixture.promise("cli", "gating", "reproduces", translation={"check": ALWAYS_FAILS})
+        fixture.promise("cli", "gating", "does-not", translation={"check": FAILS_ONCE})
+        fixture.promise("cli", "gating", "kept", translation={"check": KEPT})
+
+        run = seal("outcomes", "run", "--all", "--confirm", cwd=fixture.root)
+
+        # The verdict, first, because everything else here is a reason
+        # attached to a failure rather than a way out of one.
+        expect(
+            run.status != 0,
+            f"a failure that did not reproduce still fails the run:\n{run}",
+        )
+
+        reproduced = line_about(run, "reproduces")
+        did_not = line_about(run, "does-not")
+        expect(
+            "confirmed" in reproduced and "not confirmed" not in reproduced,
+            f"a failure that failed again is marked as having reproduced:\n{run}",
+        )
+        expect(
+            "not confirmed" in did_not,
+            f"and one that held on its own is marked as not having:\n{run}",
+        )
+        expect(
+            "PASS" not in did_not,
+            f"a failure that did not reproduce is not turned into a promise kept:\n{run}",
+        )
+
+        # On its own: the second run covers that promise and nothing else.
+        # Read off the plan lines, which say how many a run was asked for.
+        plans = [line.strip() for line in run.output.splitlines() if line.startswith("1..")]
+        expect(
+            plans[0] == "1..3" and plans[1:] == ["1..1", "1..1"],
+            f"the second run covers one promise, not the suite again:\n{run}",
+        )
+        expect(
+            "from a reset" in run.output,
+            f"and it is a run from a baseline rather than a retry in place:\n{run}",
+        )
+
+        # And what the first run left is kept beside what the second found.
+        results = fixture.root / "tests-results" / "outcomes" / "cli" / "gating"
+        expect(
+            (results / "does-not.first-run").is_dir(),
+            "the run that failed is kept beside the one that held, so the "
+            f"failure that did not reproduce has something to compare: {sorted(results.iterdir())}",
+        )
+
+        # A promise that was kept is left alone: nothing is run twice for
+        # having gone well.
+        expect(
+            not (results / "kept.first-run").exists(),
+            f"only what was red is run again: {sorted(results.iterdir())}",
+        )
+
+
+check(body)

@@ -1,0 +1,6 @@
+# Pinned to major versions: a docs build that changes what it renders
+# without anybody editing a page is a build nobody can review.
+sphinx>=8.1,<9
+furo>=2024.8.6
+myst-parser>=4.0,<5
+sphinx-copybutton>=0.5.2,<0.6

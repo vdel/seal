@@ -1,0 +1,20 @@
+# The non-secret half of this shape's api environment.
+#
+# A real environment does not assemble a pod's environment from one object.
+# What is a setting and what is a credential differ in who may read them,
+# and which kind carries a value is what decides RBAC and what `kubectl
+# describe` prints. This shape says so by declaring two objects where the
+# dev overlay declares one, and the api container reads both.
+#
+# `keys` names exactly what this object carries -- splitting is opt-in, and
+# only a split object names its keys. Everything else services/api/.env
+# declares is left to the Secret this overlay inherits from ../dev, which
+# names none and so claims the remainder: adding a credential to `.env`
+# still touches one file.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: example-api-config
+  annotations:
+    seal-test.dev/fill-from: api
+    seal-test.dev/keys: DEBUG

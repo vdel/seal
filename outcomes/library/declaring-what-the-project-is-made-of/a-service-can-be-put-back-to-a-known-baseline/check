@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+A service that owns state declares how to put it back, and that reset can
+be asked for -- and waited for -- rather than hoped for.
+
+Both halves are read out of one run. The fixture's service starts with
+nothing in its store; only its reset writes the baseline there. So:
+
+- **Asked for**: a gating run asks for a baseline before it reads anything,
+  and the state is there afterwards. Nothing else in the fixture could have
+  put it there.
+- **Waited for**: the service's own suite, which runs after the reset, is
+  handed a store that already holds the baseline. A run that started the
+  suite while the reset was still working would leave that evidence behind
+  instead.
+
+And it is asked again on a dirtied session: the state is changed under the
+running service, the run is repeated, and the baseline is back.
+
+The run is a test build, because that is the run a service's own suite is
+part of: a development build registers no test run at all, so asking one
+for a report would be asking for something that was never going to exist.
+
+Deliberately not asserted, because the prompt withholds it: **what any
+baseline holds** -- which tables, which fixture, which broker -- which
+belongs to whichever project owns the service. And that state is reset
+automatically: asking is part of the promise, which is why the second half
+of this check has to ask.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, check, deployed, expect, kubectl, project  # noqa: E402
+from helpers import ledger  # noqa: E402
+from helpers.cluster import BRINGING_UP_SECONDS  # noqa: E402
+
+DIRT = "what-the-last-run-left"
+
+
+def state() -> str:
+    return kubectl(
+        "exec", "deploy/ledger", "--", "sh", "-c", "cat /state/ledger 2>/dev/null"
+    ).stdout
+
+
+def body() -> None:
+    with project("baseline") as fixture:
+        ledger.build(fixture)
+
+        with deployed(fixture, "--", "--build_type", "test") as run:
+            expect(run.status == 0, f"the project comes up:\n{run}")
+            expect(
+                state() == ledger.BASELINE,
+                f"a run that asks for a baseline gets one: the store holds "
+                f"{state()!r}, and only this service's reset writes there",
+            )
+
+            # Waited for, not merely started: the service's own suite runs
+            # after the reset, and what it saw is in its report.
+            saw = (fixture.root / "tests-results" / "ledger" / ledger.WHAT_IT_SAW).read_text(
+                encoding="utf-8"
+            )
+            expect(
+                f"state={ledger.BASELINE}" in saw,
+                f"and nothing downstream of it starts until it has finished:\n{saw}",
+            )
+
+            # Asking again, on a session that has been used. This is the
+            # half a run at startup cannot establish: a reset is something
+            # asked for, not something that happens to anybody's session.
+            dirtied = kubectl(
+                "exec", "deploy/ledger", "--", "sh", "-c", f"printf '{DIRT}' > /state/ledger"
+            )
+            expect(dirtied.status == 0, f"the session's state can be changed:\n{dirtied}")
+            expect(state() == DIRT, f"and it changed: the store holds {state()!r}")
+
+            again = seal(
+                "ci", "--", "--build_type", "test",
+                cwd=fixture.root, timeout=BRINGING_UP_SECONDS,
+            )
+            expect(again.status == 0, f"asking again succeeds:\n{again}")
+            expect(
+                state() == ledger.BASELINE,
+                f"and what the last run left is gone: the store holds {state()!r}",
+            )
+
+
+check(body)

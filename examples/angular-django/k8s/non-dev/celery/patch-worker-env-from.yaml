@@ -1,0 +1,19 @@
+# The same two sources the api container reads, for the celery worker: it
+# runs the same image against the same Django settings, so it needs every
+# key services/api/.env declares. Reshaping the api's objects means
+# repointing each container that reads them -- `seal check` says so
+# by name when one is left behind.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-worker
+spec:
+  template:
+    spec:
+      containers:
+      - name: celery-worker
+        envFrom:
+        - configMapRef:
+            name: example-api-config
+        - secretRef:
+            name: example-api-secrets

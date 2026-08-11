@@ -1,0 +1,38 @@
+[project]
+name = "seal"
+version = "0.1.1"
+description = "Sealed expected end-to-end outcomes for autonomous agentic development"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "python-dotenv>=1.0",
+    # `seal check` reads the project's Kubernetes manifests, so YAML parsing
+    # is part of what the CLI does at runtime rather than a test-only need.
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+seal = "seal.seal:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.pytest.ini_options]
+addopts = "-vv"
+
+[tool.hatch.build.targets.wheel]
+# Standard src layout: "src/seal" is mapped to the "seal" package
+# below, which already includes non-Python files recursively, so no separate
+# force-include entry is needed for them. The shared Tilt (Starlark) helpers
+# live in ../tilt/ instead, packaged as Tilt extensions (see /tilt/README.md)
+# rather than as part of this package.
+packages = ["src/seal"]

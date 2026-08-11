@@ -1,0 +1,106 @@
+name: "Internal: docs"
+
+# The user documentation in docs/, built on every pull request and published
+# to GitHub Pages from main.
+#
+# The build is the gate. Sphinx runs with `-W`, so a warning fails the job:
+# a broken cross-reference is a page that sends a reader nowhere, and that is
+# worth catching on the pull request, where it can still be fixed, rather
+# than on a publish nobody is watching. The command is the one
+# docs/README.md tells a contributor to run locally, verbatim, so a green run
+# here is a build they can reproduce.
+#
+# Publishing is a second job that runs only on main. It deploys the artifact
+# the build job produced, which is the same artifact a reviewer downloads
+# from the pull request -- what was reviewed is what goes live, with no
+# second build in between that could render something else.
+#
+# Pages has to be set to deploy from GitHub Actions for the deploy job to
+# have a target: Settings -> Pages -> Build and deployment -> Source. The
+# `enablement` input that would set it from here needs a token with
+# administration rights, which is more than this workflow should hold.
+#
+# Read the Docs builds the same directory from .readthedocs.yaml, and its
+# `fail_on_warning` is what `-W` above mirrors.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.readthedocs.yaml'
+      - '.github/workflows/internal-docs.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - '.readthedocs.yaml'
+      - '.github/workflows/internal-docs.yml'
+  # Republishing without a docs change: a Pages setting that has just been
+  # corrected, or a deployment that has to be repeated.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # `pages` because configuring Pages reads the repository's Pages
+      # configuration through the API. Read, not write: this job produces an
+      # artifact and deploys nothing.
+      pages: read
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v8.1.0
+
+    - name: Configure GitHub Pages
+      # Reads the repository's Pages configuration, so a repository that
+      # isn't set to deploy from Actions fails here, before a build, rather
+      # than at the deployment it has no target for.
+      uses: actions/configure-pages@v5
+
+    - name: Build the documentation
+      run: |
+        uv run --with-requirements docs/requirements.txt \
+          sphinx-build -b html -W docs docs/_build/html
+
+    - name: Upload the rendered site
+      # Prose is reviewed by reading it. On a pull request this is what lets
+      # a reviewer open the pages it changes instead of rendering the
+      # Markdown in their head; on main it is what the deploy job publishes.
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: docs/_build/html
+
+  deploy:
+    # Only from main. A pull request builds -- that is the gate -- but the
+    # published site follows the branch the site is published from, and
+    # `workflow_dispatch` can be started from any branch.
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      # `pages` to create the deployment, `id-token` to mint the OIDC token
+      # that proves to Pages which ref this run came from.
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # Scoped to this job rather than the workflow: two deploys racing decide
+    # the live site by whichever finishes last, while two pull-request builds
+    # are independent and have no reason to queue behind each other. Queued
+    # deploys are superseded rather than cancelled in flight, so a publish
+    # that has started finishes.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v5

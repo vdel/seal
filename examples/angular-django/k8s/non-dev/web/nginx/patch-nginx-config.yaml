@@ -1,0 +1,67 @@
+# nginx serves the built bundle here instead of proxying to a dev server.
+#
+# `data` merges key by key and `nginx.conf` is one key, so this replaces the
+# dev overlay's whole configuration rather than editing it. The two differ in
+# one place -- what `location /` does -- but a config file is not something
+# to patch a line into: what nginx is being told has to be readable in one
+# piece.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /var/run/nginx.pid;
+
+    events {
+        worker_connections 1024;
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log /var/log/nginx/access.log main;
+
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        keepalive_timeout 65;
+        types_hash_max_size 2048;
+
+        upstream api {
+            server localhost:8888;
+        }
+
+        server {
+            listen 8000 default_server;
+            server_name _;
+
+            # The Django API (admin, static, health-check, ...) is served
+            # under /api/; everything else is the Angular app.
+            location ^~ /api/ {
+                proxy_pass http://api/;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+
+            # The bundle the initContainer copied in (see
+            # patch-init-containers.yaml). The fallback to index.html is what
+            # a single-page app needs from whatever serves it: the router
+            # owns every path below /, so a reload of one has to reach the
+            # app rather than 404 on a file that was never built.
+            location / {
+                root /usr/share/nginx/html;
+                try_files $uri $uri/ /index.html;
+            }
+        }
+    }

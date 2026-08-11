@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+The promise the rest of the library exists to make honestly: a change that
+stops a promise being kept fails the gate.
+
+What a checkout can establish, and what this therefore asserts, is that the
+suite's **exit status is the verdict** rather than a summary of one -- a red
+run nothing gates on is a report, and an exit status is the one thing every
+gate in every platform reads. That a repository's branch protection then
+blocks the merge is a setting, out of scope here and said so in the prompt
+beside this one.
+
+The three shapes below are the ways a project could otherwise go green
+without its promises holding:
+
+- **A broken promise that does not fail the run.** The verdict has to rest
+  on the whole suite, so a failure anywhere is a failure.
+- **A run narrowed to what somebody chose.** A gate on a subset is a gate on
+  whichever tests somebody thought to run, which is the judgement the gate
+  exists to replace -- so a narrowed run says what it left out rather than
+  handing back a short green listing.
+- **A quarantined promise.** The documented exception: it does not fail the
+  run, and it is never reported as kept, because a quarantine that read as a
+  pass would be the way to a green suite the whole layer refuses.
+
+Deliberately not asserted, because the prompt withholds it: whether the
+change was any good, and anything about the application beyond what it
+promises. A substantial rewrite that satisfies every promise merges, and
+that is the intended outcome rather than a loophole.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, check, expect, project  # noqa: E402
+
+KEPT = "#!/bin/sh\nexit 0\n"
+BROKEN = "#!/bin/sh\nexit 1\n"
+PROMISES = ("one", "two", "three")
+
+
+def body() -> None:
+    with project("the-gate") as fixture:
+        fixture.tiltfile().service("api", env="GREETING=hello\n")
+        fixture.deployment("api")
+        fixture.codeowners("/outcomes/ @owner\n")
+        fixture.group("cli")
+        for name in PROMISES:
+            fixture.promise("cli", "gating", name, translation={"check": KEPT})
+
+        green = seal("outcomes", "run", "--all", cwd=fixture.root)
+        expect(green.status == 0, f"a project keeping every promise passes:\n{green}")
+
+        # The change. Nothing else about the project moves, so the run's
+        # answer is about the promise and not about the fixture.
+        fixture.write("outcomes/cli/gating/two/check", BROKEN, executable=True)
+
+        red = seal("outcomes", "run", "--all", cwd=fixture.root)
+        expect(
+            red.status != 0,
+            f"a promise that stopped being kept turns the run red:\n{red}",
+        )
+        expect(
+            "cli/gating/two" in red.output,
+            f"and the run names the promise that is not being kept:\n{red}",
+        )
+        # The whole suite ran: a failure does not stop what comes after it,
+        # and what was reported is everything the tree holds.
+        for name in PROMISES:
+            expect(
+                f"cli/gating/{name}" in red.output,
+                f"every promise is still reported when one fails -- {name}:\n{red}",
+            )
+        expect(
+            f"{len(PROMISES)} outcome(s)" in red.output,
+            f"and the count is the tree's, not the run's mood:\n{red}",
+        )
+
+        # Narrowing. The listing that comes back is green and short, and the
+        # run says as much rather than letting it read as the suite's verdict.
+        narrowed = seal("outcomes", "run", "cli/gating/one", cwd=fixture.root)
+        expect(
+            "did not run" in narrowed.output,
+            f"a narrowed run says what it left out:\n{narrowed}",
+        )
+        expect(
+            "only the whole suite" in narrowed.output,
+            f"and says that a subset is not what a verdict rests on:\n{narrowed}",
+        )
+        expect(
+            "cli/gating/two" not in narrowed.output.split("did not run")[0],
+            f"a narrowed run does not report on promises it never started:\n{narrowed}",
+        )
+
+        # The documented exception, which is an exception to failing the run
+        # and to nothing else.
+        fixture.write(
+            "outcomes/cli/gating/two/quarantine.md",
+            "# this test is not deterministic yet\n\nIt fails about one run in five.\n",
+        )
+        quarantined = seal("outcomes", "run", "--all", cwd=fixture.root)
+        expect(
+            quarantined.status == 0,
+            f"a quarantined failure does not fail the run:\n{quarantined}",
+        )
+        expect(
+            "quarantined" in quarantined.output,
+            f"and the run says which promise is being carried:\n{quarantined}",
+        )
+        two = [
+            line for line in quarantined.output.splitlines() if "cli/gating/two" in line
+        ]
+        expect(
+            all("PASS" not in line for line in two),
+            f"a quarantined promise is never reported as kept:\n{quarantined}",
+        )
+
+
+check(body)

@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+Declaring a service is the one thing that makes it built, deployed and
+waited for, and undeclaring it is the one thing that removes it -- nothing
+else in the project has to change either way.
+
+The fixture carries two services: `witness`, declared once and never
+touched again, and `widget`, declared and then undeclared. `witness`'s own
+Deployment is read back the same way after `widget` arrives and again after
+it is gone, which is what shows that declaring or undeclaring `widget` never
+asked anything else in the project to learn about it -- the alternative
+reading, that the promise holds only because nothing else was there to
+disagree with it, is closed off by giving it something that could have.
+
+`widget`'s own readiness is delayed behind a marker its container writes a
+few seconds after it starts, so a run reporting it deployed is one that
+waited for that marker rather than one content with the container's process
+having launched -- built, deployed, and waited for, from one declaration.
+
+The run is a development build: no service here declares a test suite of
+its own, because whether a service has tests is part of what a service
+*is*, which is a different promise's business, not this one's.
+
+Deliberately not asserted, because the prompt withholds it: what `widget`
+*is* -- its language, its image, whether it has tests, what it depends on.
+And that a mis-declared service is caught: this only asks whether one place
+is enough to declare a service, not whether that place validates what is
+written there.
+
+Read against a session (`helpers.a_session`), not a gating run
+(`helpers.deployed`) run twice: `seal ci` starts a fresh Tilt engine
+each time, with no memory of what an earlier invocation deployed, so two
+separate `seal ci` runs can never establish whether removing widget's
+declaration removed widget -- only whether the *new* declared set came up,
+which a project with no declaration for widget would satisfy trivially,
+having never mentioned it. What the promise is actually about is the one
+engine a project works against noticing, mid-session, that a file it was
+watching no longer names a service, and pruning what it had deployed for
+it -- so this stays inside one `a_session()`, mutates the fixture while it
+is still up, and waits for that same running engine to react.
+
+Every readiness check here polls rather than trusts `a_session()`'s own
+wait: that wait is over every Deployment already in the cluster, and on a
+cluster this suite's own checks share sequentially, one a previous check
+has not finished tearing down can satisfy it before this project's build
+has even started. `wait_ready()` asks about widget and witness by name
+instead.
+"""
+
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import a_session, check, expect, kubectl, project  # noqa: E402
+from helpers.projects import container  # noqa: E402
+
+# How long a live session is given to notice a file change and reconcile --
+# generous next to how fast Tilt's own file watcher usually reacts, so a
+# session that is merely slow is not read as one that never pruned anything.
+RECONCILE_SECONDS = 120
+
+# Ready the instant it starts: `witness` is the control that shows adding or
+# removing `widget` disturbs nothing else already declared.
+WITNESS_IMAGE = """FROM alpine:3.20
+RUN mkdir -p /state
+CMD ["sh", "-c", "sleep infinity"]
+"""
+WITNESS_PROBE = {
+    "exec": {"command": ["sh", "-c", "test -d /state"]},
+    "periodSeconds": 2,
+    "failureThreshold": 30,
+}
+
+# Not ready until several seconds after the container's process starts, so a
+# run that reports it deployed had to have waited rather than merely started
+# it.
+WIDGET_IMAGE = """FROM alpine:3.20
+CMD ["sh", "-c", "sleep 5 && mkdir -p /ready && sleep infinity"]
+"""
+WIDGET_PROBE = {
+    "exec": {"command": ["sh", "-c", "test -d /ready"]},
+    "periodSeconds": 2,
+    "failureThreshold": 30,
+}
+
+
+def ready_replicas(name: str) -> str:
+    return kubectl(
+        "get", "deploy", name, "-o", "jsonpath={.status.readyReplicas}"
+    ).stdout.strip()
+
+
+def deployment_exists(name: str) -> bool:
+    return kubectl("get", "deploy", name).status == 0
+
+
+def wait_ready(name: str, timeout: int = RECONCILE_SECONDS) -> str:
+    """Poll this Deployment's own ready count, rather than trusting that it
+    is already there the instant a_session() returns.
+
+    a_session()'s own wait is for the cluster having *something* to test
+    against, over every Deployment already in it -- on a cluster this
+    check's own outcomes share sequentially, a Deployment a previous check
+    has not finished tearing down can satisfy that before this project's own
+    build has even started. What this promise is actually about is whether
+    widget itself became ready, so this check waits for widget by name.
+    """
+    deadline = time.monotonic() + timeout
+    replicas = ready_replicas(name)
+    while replicas in ("", "0") and time.monotonic() < deadline:
+        time.sleep(2)
+        replicas = ready_replicas(name)
+    return replicas
+
+
+def body() -> None:
+    with project("adding-a-service") as fixture:
+        fixture.deploys(
+            "witness",
+            WITNESS_IMAGE,
+            containers=[
+                container("witness", image="witness", probe=False) | {"readinessProbe": WITNESS_PROBE}
+            ],
+        )
+        fixture.deploys(
+            "widget",
+            WIDGET_IMAGE,
+            containers=[
+                container("widget", image="widget", probe=False) | {"readinessProbe": WIDGET_PROBE}
+            ],
+        )
+
+        with a_session(fixture):
+            expect(
+                wait_ready("widget") not in ("", "0"),
+                f"declaring widget was enough for it to be built, deployed and "
+                f"waited for: readyReplicas={ready_replicas('widget')!r}",
+            )
+            expect(
+                wait_ready("witness") not in ("", "0"),
+                f"and witness, declared before widget existed, is unaffected: "
+                f"readyReplicas={ready_replicas('witness')!r}",
+            )
+
+            # Undeclare it, against the session already up -- the question a
+            # fresh run cannot put, since a fresh run has no earlier
+            # declaration to have forgotten: does the one engine that has
+            # been running this project notice, and take away what it no
+            # longer has a reason to keep.
+            fixture.stops_deploying("widget")
+            deadline = time.monotonic() + RECONCILE_SECONDS
+            while deployment_exists("widget") and time.monotonic() < deadline:
+                time.sleep(2)
+            expect(
+                not deployment_exists("widget"),
+                f"removing the declaration removes the service: widget's Deployment "
+                f"is still there {RECONCILE_SECONDS}s after it was undeclared",
+            )
+            expect(
+                wait_ready("witness") not in ("", "0"),
+                f"and witness needed no change of its own to keep running: "
+                f"readyReplicas={ready_replicas('witness')!r}",
+            )
+
+
+check(body)

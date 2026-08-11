@@ -1,0 +1,26 @@
+load('ext://seal', 'k8s_overlay')
+
+# Which overlay this run deploys, with this project's own default repeated
+# from the root Tiltfile's select_k8s_overlay() call. A service Tiltfile is
+# include()d before that call resolves, so `k8s_overlay` is empty here
+# whenever a run didn't name one -- the same reason _REGISTRY is repeated in
+# services/*/Tiltfile rather than read back from Tilt.
+_OVERLAY = k8s_overlay or 'dev'
+
+# Deploy the service with Tilt, forwarding port and adding a label for selection in Tilt UI
+PORTS_TO_EXPOSE = [8000]  # Nginx port
+if _OVERLAY == 'dev':  # only the dev overlay declares a UI container; elsewhere it is an init container
+    PORTS_TO_EXPOSE.append(8888)
+    PORTS_TO_EXPOSE.append(4200)
+
+# resource_deps is what makes the datastores' readinessProbes gate anything:
+# Tilt reads no ordering out of the Kubernetes manifests, so without this it
+# starts every resource at once and the probes only decide when `tilt ci`
+# calls the environment up. The api container in this pod migrates against
+# postgres and talks to valkey on boot, so both have to be answering first.
+k8s_resource(
+    'web',
+    port_forwards=PORTS_TO_EXPOSE,
+    labels=['web'],
+    resource_deps=['postgres', 'valkey'],
+)

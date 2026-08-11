@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+The prompt names two halves and says "built for that run" is the
+load-bearing one. Both are asserted here, in two independent parts, because
+they need different fixtures to establish.
+
+**Every promise is covered, not a selection** (no cluster needed). A tap
+group's tree is grown by one promise after the baseline run, with nothing
+else told about it -- no config entry, no allowlist -- and both the run that
+performs the suite (`--all`) and the form that only reads verdicts back are
+checked to see the grown count. Coverage is the tree's own membership; a
+run that answered from a count taken earlier would be exactly the kind of
+selection the prompt says a project must never have to wonder about.
+
+**Built for that run** (needs a cluster). Reusing `deployed()`'s own
+teardown-per-use as the mechanism under test: an outcome deployed and torn
+down by one `deployed()` block does not survive to answer for the next one,
+even where the next block is a wholly unrelated project sharing the same
+cluster this suite's checks share. That is what "an environment reused
+between runs carries whatever the last one left" would look like if it were
+true, made observable the only way a checkout can make it observable --
+without a real cluster there is nothing to reuse or fail to reuse.
+
+What this reading chose:
+
+- **"A pull request" is stood in for by "a run of the suite in this
+  checkout"**, since a check has no pull request to point at. The command a
+  PR gate calls is the same one this asserts on: `seal outcomes run`.
+- **Growing the tree rather than shrinking it.** A promise appearing between
+  two runs is the shape a real pull request takes far more often than one
+  disappearing, and it is the shape the neighbouring
+  `a-change-that-breaks-a-promise-cannot-merge` check does not already cover
+  (that one narrows a fixed tree; this one grows it).
+- **An unrelated second project, not the first project edited.** Whether a
+  fixture that removed a service comes up clean on its *own* next run is
+  `bringing-a-project-up/one-command-brings-up-every-service-declared`'s
+  question, already asked there. What is asked here is stronger: that a
+  cluster this suite's own checks share carries nothing from a run that has
+  already finished, into a project that never declared what it is looking
+  for.
+
+Deliberately not asserted, because the prompt withholds it: how long a run
+takes, and that the environment resembles a production one. And left to the
+neighbouring check: that a broken promise turns the run red at all -- this
+one is about what the run covers, not about what it decides once it has.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import Project, seal, check, deployed, expect, kubectl, project  # noqa: E402
+from helpers.projects import container  # noqa: E402
+
+KEPT = "#!/bin/sh\nexit 0\n"
+PROMISES = ("one", "two", "three")
+
+SERVES = """FROM busybox:1.36
+RUN mkdir -p /www && printf 'serving\\n' > /www/index.html
+CMD ["httpd", "-f", "-p", "8080", "-h", "/www"]
+"""
+PROBE = {"httpGet": {"path": "/", "port": 8080}, "periodSeconds": 2, "failureThreshold": 30}
+
+
+def _declare(fixture: Project, name: str) -> None:
+    fixture.service(name, env="")
+    fixture.deploys(
+        name, SERVES, containers=[container(name, image=name, probe=False) | {"readinessProbe": PROBE}]
+    )
+
+
+def _running() -> set[str]:
+    """Which Deployments the cluster is actually running, by name."""
+    listed = kubectl(
+        "get", "deploy", "-o",
+        r"jsonpath={range .items[*]}{.metadata.name}={.status.readyReplicas}{'\n'}{end}",
+    )
+    return {
+        line.split("=")[0]
+        for line in listed.stdout.splitlines()
+        if line.strip() and line.split("=")[1] not in ("", "0")
+    }
+
+
+def _every_promise_is_covered_not_a_selection() -> None:
+    with project("no-selection") as fixture:
+        fixture.codeowners("/outcomes/ @owner\n")
+        fixture.group("cli")
+        for name in PROMISES:
+            fixture.promise("cli", "gating", name, translation={"check": KEPT})
+
+        baseline = seal("outcomes", "run", "--all", cwd=fixture.root)
+        expect(baseline.status == 0, f"a project keeping its declared promises passes:\n{baseline}")
+        expect(
+            f"{len(PROMISES)} outcome(s)" in baseline.output,
+            f"the run covers exactly what the tree declares, no more and no fewer:\n{baseline}",
+        )
+
+        # The change a pull request actually makes: a promise added to the
+        # tree, with nothing else told about it -- no config entry to update,
+        # no list to add it to. There is nowhere else it could have been
+        # declared.
+        fixture.promise("cli", "gating", "four", translation={"check": KEPT})
+
+        grown = seal("outcomes", "run", "--all", cwd=fixture.root)
+        expect(grown.status == 0, f"the newly added promise is kept too:\n{grown}")
+        expect(
+            "4 outcome(s)" in grown.output,
+            f"a run covers every promise the tree now holds, not the count from before "
+            f"it grew:\n{grown}",
+        )
+        expect(
+            "cli/gating/four" in grown.output,
+            f"and the added promise is named, not merely folded into a bigger count:\n{grown}",
+        )
+
+        # The bare form -- what reads verdicts back rather than performing a
+        # run -- answers from the same walk of the tree, not a count taken
+        # when it was smaller.
+        read_back = seal("outcomes", "run", cwd=fixture.root)
+        expect(
+            "4 outcome(s)" in read_back.output,
+            f"reading the verdicts back sees every promise the tree holds, too:\n{read_back}",
+        )
+
+
+def _built_for_this_run_carries_nothing_from_the_last() -> None:
+    with project("this-run") as first:
+        first.codeowners("* @owner\n")
+        _declare(first, "leftover")
+        with deployed(first) as up:
+            expect(up.status == 0, f"the run that declares it comes up clean:\n{up}")
+            expect("leftover" in _running(), f"what this run declares is actually there:\n{_running()}")
+
+        # deployed()'s own teardown has already run by here -- the same
+        # discipline a fresh cluster per pull request would give for real,
+        # made checkable without one.
+        expect(
+            "leftover" not in _running(),
+            "a container this run brought up does not outlive the run itself",
+        )
+
+    # An unrelated project, standing in for the next pull request, deployed
+    # into the same cluster this suite's own checks share. Nothing here
+    # names "leftover" -- if the environment it lands in carried anything
+    # from the run before it, that container is what would still answer.
+    with project("the-next-run") as second:
+        second.codeowners("* @owner\n")
+        _declare(second, "fresh")
+        with deployed(second) as up:
+            expect(up.status == 0, f"an unrelated run into the same cluster comes up clean too:\n{up}")
+            expect(
+                "leftover" not in _running(),
+                f"the run before it left nothing behind for this one to find: {sorted(_running())}",
+            )
+            expect(
+                "fresh" in _running(),
+                f"what this run itself declares is what is actually there: {sorted(_running())}",
+            )
+
+
+def body() -> None:
+    _every_promise_is_covered_not_a_selection()
+    _built_for_this_run_carries_nothing_from_the_last()
+
+
+check(body)

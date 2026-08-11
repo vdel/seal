@@ -1,0 +1,50 @@
+# Load helper functions
+load('ext://seal', 'seal_service', 'publish_images')
+
+# See services/api/Tiltfile's own copy of this for why it's duplicated here
+# instead of looked up from Tilt or the root Tiltfile.
+_REGISTRY = 'ghcr.io/your-org' if publish_images else None
+
+# This service's one identifier, everywhere: the 'image:' placeholder and
+# container name hardcoded in k8s/dev/web/ui/deployment.yaml. The root
+# Tiltfile's default_registry() call handles pushing the image to the right
+# registry; naming it here is this project's own responsibility.
+service_name = 'example-ui'
+
+live_update = [
+    # Sync source files for live reload; ng serve's dev server watches them.
+    sync('./src', '/app/src'),
+]
+
+# seal_service() turns service_name's .env into a k8s Secret (see
+# /rfcs/0006-credential-resolution.md), builds whichever of this service's own
+# Dockerfile stages the run's build type asks for -- 'development' runs
+# `ng serve`, while 'runtime' only bakes the static build for an
+# initContainer to copy out, declared in that environment's own overlay --
+# and, because test_stage is given, registers this service's test pipeline.
+# The three stage names below are this Dockerfile's own; seal assumes none
+# of them.
+#
+# `test_command` is what produces this service's report, run inside the
+# container once it is up. Karma writes it to the tests-results/ui/ that
+# karma.conf.js names, under the junit_tests_directory above.
+#
+# This container is merged into the shared 'web' Deployment/pod (see
+# k8s/dev/web), so point k8s_resource_name and resource_dep at 'web', while
+# service_name (also this container's own name in that pod) keeps
+# identifying this service's own tests-results/ directory and its own
+# seal_tests_verdict_example_ui resource.
+seal_service(
+    service_name,
+    context='.',
+    dockerfile='Dockerfile',
+    live_update=live_update,
+    k8s_resource_name='deploy/web',
+    resource_dep='web',
+    development_stage='development',
+    runtime_stage='runtime',
+    test_stage='test',
+    junit_tests_directory='/app/tests-results/',
+    test_command='npx ng test --watch=false --no-progress --karma-config=karma.conf.js --code-coverage',
+    registry=_REGISTRY,
+)

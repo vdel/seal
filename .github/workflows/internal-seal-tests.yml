@@ -1,0 +1,204 @@
+name: "Internal: seal tests"
+
+# The `seal` package has its own test suite, separate from any project built
+# on top of it -- see python/README.md. It covers both halves of the
+# library: python/ itself, and tilt/, whose Starlark it evaluates through a
+# real `tilt alpha tiltfile-result` (see tests/test_seal_tilt_resources.py).
+# It also runs on examples/, which one Docker-gated test uses as a fixture
+# project.
+#
+# Each tree wholesale rather than the individual files those tests read: a
+# filter narrower than the suite lets a PR change something a guard covers
+# without ever running that guard, and one enumerated file at a time is a
+# list that has to be corrected every time a test starts reading something
+# new. This suite is quick and needs no cluster, so running it on a change
+# it happens not to assert on costs little next to that.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'python/**'
+      - 'tilt/**'
+      - 'examples/**'
+      # The agent skills and their installer: the suite covers what ships
+      # (see python/tests/test_agent_skills.py), so a change to either is
+      # checked by the guard that reads them.
+      - '.claude/**'
+      - 'bin/**'
+      # What this repository itself promises. `seal check` below holds
+      # the tree to the rules every adopting project's is held to, so a
+      # change to it has to run the job that checks it.
+      - 'outcomes/**'
+      # The workflows, wholesale: the suite reads seal-ci.yml -- holding it
+      # to the flags the Tilt extension defines, and to every run being one
+      # `seal ci` a person can type -- and this file decides what the suite
+      # runs on at all. A change to either is checked by the guard that
+      # covers it.
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - 'python/**'
+      - 'tilt/**'
+      - 'examples/**'
+      # The agent skills and their installer: the suite covers what ships
+      # (see python/tests/test_agent_skills.py), so a change to either is
+      # checked by the guard that reads them.
+      - '.claude/**'
+      - 'bin/**'
+      # What this repository itself promises. `seal check` below holds
+      # the tree to the rules every adopting project's is held to, so a
+      # change to it has to run the job that checks it.
+      - 'outcomes/**'
+      # The workflows, wholesale: the suite reads seal-ci.yml -- holding it
+      # to the flags the Tilt extension defines, and to every run being one
+      # `seal ci` a person can type -- and this file decides what the suite
+      # runs on at all. A change to either is checked by the guard that
+      # covers it.
+      - '.github/workflows/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Bound to 'dev' so secrets.PROTON_PASS_PERSONAL_ACCESS_TOKEN below
+    # resolves against that GitHub Environment's own secret, for a project
+    # whose `.env` files reference one. The bundled example's don't (see
+    # examples/angular-django/services/api/.env), so nothing in this repo's
+    # own suite reaches for a password manager today -- the binding stays
+    # because this workflow is the one a fork pointing at its own project
+    # would run, and that project may well need it.
+    environment: dev
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v8.1.0
+
+    - name: Install Tilt
+      # This suite evaluates a Tiltfile for real (see
+      # tests/test_seal_tilt_resources.py): seal's Starlark half is half the
+      # library, and asserting on what Tilt itself reports is the only way
+      # to check it rather than a Python restatement of it.
+      #
+      # Run from a scratch dir, not the checkout: tilt-dev's own install.sh
+      # extracts the release tarball's "tilt" member into the *current*
+      # working directory (`tar -xzv tilt`) before moving it onto PATH --
+      # since this repo has a top-level tilt/ directory (the Tilt
+      # extensions, see /tilt/README.md), running it from the checkout root
+      # fails with "tar: tilt: Cannot open: File exists" (a non-empty
+      # directory can't be replaced by a same-named file).
+      working-directory: ${{ runner.temp }}
+      run: |
+        curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
+        rsync --version | head -1  # syncback's verify_rsync.sh refuses to load the extension without one, which fails the Tiltfile at parse time
+
+    - name: Check whether this project needs a password manager
+      id: credentials
+      working-directory: .
+      # `seal` reaches for a password manager only when a value actually
+      # names one (see providers_needed() in
+      # python/src/seal/credentials.py), so a project whose `.env` files hold
+      # only literals and `k8s://` markers never invokes pass-cli -- and its
+      # CI shouldn't depend on one being reachable either.
+      # A token is needed only where a service's `.env` actually references
+      # that provider's scheme (/rfcs/0006-credential-resolution.md); this
+      # step is what makes that true of the workflow as well.
+      #
+      # `^[^#]*pass://` rather than a plain search, so the commented worked
+      # example every `.env` is welcome to carry doesn't count as a use. It
+      # is deliberately loose about everything else -- any uncommented line
+      # mentioning `pass://` counts, whatever shape the assignment takes.
+      # The two mistakes are not symmetric: a false positive installs a CLI
+      # nothing goes on to call, and a false negative breaks a project whose
+      # secrets really do live in a password manager.
+      run: |
+        if grep -rqsE '^[^#]*pass://' --include='.env' .; then
+          echo "needed=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "needed=false" >> "$GITHUB_OUTPUT"
+          echo "No .env under $(pwd) references a pass:// value -- skipping Proton Pass."
+        fi
+
+    - name: Install Proton Pass CLI
+      if: steps.credentials.outputs.needed == 'true'
+      run: |
+        curl -fsSL https://proton.me/download/pass-cli/install.sh | bash
+
+    - name: Log in to Proton Pass
+      if: steps.credentials.outputs.needed == 'true'
+      # No `if: secrets.PROTON_PASS_PERSONAL_ACCESS_TOKEN != ''` guard:
+      # referencing `secrets.X` in a step's `if:` breaks workflow validation
+      # (0 jobs scheduled), so the emptiness check happens in the shell below.
+      #
+      # These steps are this repository's own, not something seal supplies.
+      # seal-ci.yml takes a `provider_setup` input instead, and what a
+      # caller passes it looks like this.
+      env:
+        PROTON_PASS_PERSONAL_ACCESS_TOKEN: ${{ secrets.PROTON_PASS_PERSONAL_ACCESS_TOKEN }}
+        PROTON_PASS_KEY_PROVIDER: fs  # the CI/container-safe key provider -- see pass-cli's own docs
+      run: |
+        # Exported to $GITHUB_ENV, not just this step's own `env:` above:
+        # the later `seal run` (below) shells out to `pass-cli` again too,
+        # and needs it just as much -- or it falls back to a keychain-backed
+        # provider that can't find this step's session and force-logs-out
+        # with "Local encryption key not found but local data exists".
+        echo "PROTON_PASS_KEY_PROVIDER=fs" >> "$GITHUB_ENV"
+        if [ -z "${PROTON_PASS_PERSONAL_ACCESS_TOKEN}" ]; then
+          # A ::warning:: rather than a plain echo or a hard failure: the
+          # secret is provisioned out of band (it is absent on a fork, and
+          # on this repo whenever that provisioning hasn't run), so its
+          # absence isn't this job's to fail on -- but it does silently
+          # narrow what the suite covers, since the Django isolation test
+          # resolves a real pass:// reference and skips without a session.
+          # Surfacing it in the run summary is what keeps that from
+          # reading as a full green run.
+          echo "::warning::PROTON_PASS_PERSONAL_ACCESS_TOKEN is not set on the 'dev' GitHub Environment -- skipping login. A test resolving a pass:// reference would skip; this step only runs at all when some .env has one."
+        elif ! pass-cli login; then
+          # Same reasoning as the missing-token branch above, for the same
+          # consequence: without a session the Django isolation test skips
+          # and everything else in this suite still runs, so a login that
+          # can't reach proton.me (a timeout, an outage) narrows coverage
+          # rather than invalidating it. Failing the job here instead means
+          # no test runs at all -- the results publisher finds no junit.xml
+          # and reports zero tests -- which hides every real signal the
+          # suite would have given. The warning is what keeps the narrower
+          # run from reading as a full green one.
+          #
+          # Deliberately not mirrored in seal-ci.yml: `seal ci` there has
+          # to resolve each service's .env for real to generate its Secret,
+          # so a login failure genuinely blocks that job and is better
+          # reported here, at its cause.
+          echo "::warning::pass-cli login failed (proton.me unreachable?) -- continuing without a session. Any test resolving a pass:// reference will skip."
+        fi
+
+    - name: Check this repository's own specification
+      # This repository has an outcome tree of its own -- what Seal
+      # promises an adopting project (/rfcs/0014-seal-on-seal.md).
+      # It is held to the rules any project's tree is, by the same command,
+      # and a specification nothing checks is what those rules exist to
+      # prevent.
+      #
+      # No cluster and no Tilt: every group here runs on the machine, so the
+      # readiness and credential checks have nothing to look at and say so.
+      run: uv run --project python seal check
+
+    - name: Run seal's own tests
+      working-directory: python
+      # No SEAL_CREDENTIALS_ENV: the example declares no provider, so
+      # nothing here resolves against a store (see
+      # python/src/seal/providers.py).
+      run: |
+        uv sync --group dev
+        make unit-tests
+
+    - name: Publish Test Results
+      uses: EnricoMi/publish-unit-test-result-action@v2
+      if: (!cancelled())
+      with:
+        files: python/tests-results/**/junit.xml
+        check_name: "seal Test Results"

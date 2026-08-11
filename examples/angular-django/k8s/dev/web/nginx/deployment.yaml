@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          httpGet:
+            path: /api/admin/login/
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 2
+          failureThreshold: 3
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: nginx
+
+---
+# What reaches this pod by name from inside the cluster. The port-forwards in
+# third-party/nginx/Tiltfile are for a person at a browser, and they only
+# exist while a Tilt session is up; an outcome test runs in the cluster
+# alongside everything else and needs an address that doesn't depend on one
+# (see /docs/outcomes.md).
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+spec:
+  selector:
+    app: web
+  ports:
+  - port: 8000
+    targetPort: 8000

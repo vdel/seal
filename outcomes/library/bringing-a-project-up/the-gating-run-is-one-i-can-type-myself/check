@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+The promise is about the reusable CI workflow this library ships
+(.github/workflows/seal-ci.yml -- part of python/'s deliverable, not
+examples/angular-django's own workflow, which merely calls it): that every
+step deciding a promise is `seal ci` itself, forwarded the flags a
+person would type by hand, and that CI's own verdict is that command's own
+exit status rather than something the workflow works out on its own. That is
+established statically, by reading the shipped file -- there is no project
+to build here, and no cluster needed.
+
+What this reading checked, and what it left alone:
+
+- **Every step that decides a promise invokes `seal ci` exactly once**,
+  with flags drawn only from the set `tilt`'s own config declares
+  (`--k8s_overlay`, `--build_type`, `--publish_images`, `--run_outcomes`) --
+  the same flags examples/angular-django's own local `seal ci` command
+  takes. A step matching this is doing nothing a person typing the command
+  themselves would not also do.
+- **The step's own exit status is that command's own.** The two runs that
+  loop over more than one overlay capture it explicitly (`|| status=$?`,
+  then `exit $status` after moving results aside); the one-shot publish step
+  has nothing after its `seal` invocation, so the shell's ordinary
+  behaviour already makes the two the same.
+- **Reading results back goes through the CLI too** (`seal
+  _tests-results`), not a parser this workflow rolls on its own -- checked
+  by absence of the marks a hand-rolled JUnit reader would leave (an XML
+  library, a `grep`/`awk` count) in that step's own script.
+
+What this reading chose to leave alone, because the promise does not reach
+it: the "Plan the overlays" step, which turns a JSON-list *input* the
+reusable workflow itself exposes into a newline list a shell loop can read.
+It decides no promise and calls no `seal` command -- it is workflow
+plumbing for a caller-facing input, the same category of thing a person
+typing `seal ci` by hand would resolve themselves before deciding how
+many times to type it. Tool installation, the Docker-daemon wait, and the
+per-run cluster script are the same: what the prompt says is not claimed
+("the machine needs nothing installed") is exactly what these do.
+
+Deliberately not asserted, because the prompt withholds it: that a local run
+is as fast as CI's, and that the tools these steps install are the only ones
+that could work.
+"""
+
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import check, expect  # noqa: E402
+from helpers.cli import REPO_ROOT  # noqa: E402
+
+WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "seal-ci.yml"
+
+STEP_HEADER = re.compile(r"^    - name: (.+)$", re.MULTILINE)
+RUN_BODY = re.compile(r"^      run: \|\n((?:(?:[ ]{8,}.*)?\n)*)", re.MULTILINE)
+
+# Every flag `tilt`'s own config declares for a run (tilt/seal/config.Tiltfile)
+# -- the whole vocabulary a person typing `seal ci` themselves has
+# available. A step forwarding only these is forwarding exactly what the CLI
+# itself accepts, nothing invented for CI's sake.
+ALLOWED_FLAGS = {"--k8s_overlay", "--build_type", "--publish_images", "--run_outcomes"}
+
+# What a workflow rolling its own JUnit reader would leave lying around in a
+# step's script, instead of going back through `seal _tests-results`.
+HAND_ROLLED_PARSER_MARKS = ("ElementTree", "xml.etree", "grep ", "awk ")
+
+
+def steps_in(text: str) -> dict[str, str]:
+    """Every step's own script, by name -- the text between one `- name:`
+    line and the next, at the job's own step indentation."""
+    headers = list(STEP_HEADER.finditer(text))
+    return {
+        header.group(1).strip(): text[
+            header.end() : (headers[index + 1].start() if index + 1 < len(headers) else len(text))
+        ]
+        for index, header in enumerate(headers)
+    }
+
+
+def run_body(step_text: str) -> str:
+    """This step's `run: |` block, dedented -- or the empty string for a
+    step with none (a `uses:` step)."""
+    match = RUN_BODY.search(step_text)
+    if not match:
+        return ""
+    return "\n".join(
+        line[8:] if line.startswith(" " * 8) else line for line in match.group(1).splitlines()
+    )
+
+
+def _seal_invocations(body: str) -> list[str]:
+    """Every `seal <subcommand> ...` this step's script actually
+    calls, joined back into one line each across a shell `\\` continuation --
+    a workflow step wraps a long invocation across several lines, and the
+    promise is about the command, not how the file wraps it.
+
+    Comment lines are stripped first: a `#` line is free to *mention*
+    `seal ci` in prose (this file's own do), and that is not a second
+    invocation."""
+    uncommented = "\n".join(
+        line for line in body.splitlines() if not line.strip().startswith("#")
+    )
+    joined = re.sub(r"\\\n\s*", " ", uncommented)
+    return re.findall(r"\bseal\s+\S+(?:\s+--\s+[^\n]*)?", joined)
+
+
+def _flags_after_separator(invocation: str) -> list[str]:
+    """Every `--flag` named after `seal`'s own `--`, which is what
+    reaches `tilt ci` verbatim. Anything before it is `seal`'s own
+    subcommand and its own `--credentials_env`, neither of which this
+    reading asserts on."""
+    if " -- " not in invocation:
+        return []
+    after = invocation.split(" -- ", 1)[1]
+    return re.findall(r"--[A-Za-z_][A-Za-z0-9_]*(?==| |$)", after)
+
+
+def expect_is_the_command_itself(name: str, body: str, subcommand_flags: set[str]) -> None:
+    """This step's script does one piece of real work -- one `seal`
+    invocation -- and nothing it does could disagree with that command's own
+    verdict."""
+    invocations = _seal_invocations(body)
+    expect(
+        len(invocations) == 1,
+        f"'{name}' invokes `seal` exactly once, the way a person typing the "
+        f"gate by hand would (found {len(invocations)}):\n{body}",
+    )
+    invocation = invocations[0]
+    expect(
+        invocation.startswith("seal ci --"),
+        f"'{name}' runs `seal ci`, forwarded flags verbatim after `--` the same "
+        f"way a person's own command line would: {invocation!r}",
+    )
+    flags = _flags_after_separator(invocation)
+    unknown = [flag for flag in flags if flag not in ALLOWED_FLAGS]
+    expect(
+        not unknown,
+        f"'{name}' passes only flags `seal ci` itself understands "
+        f"({sorted(ALLOWED_FLAGS)}) -- found {unknown} in {invocation!r}",
+    )
+    expect(
+        subcommand_flags <= set(flags),
+        f"'{name}' actually asks for {sorted(subcommand_flags)}, found {flags} in "
+        f"{invocation!r}",
+    )
+    for mark in HAND_ROLLED_PARSER_MARKS:
+        expect(
+            mark not in body,
+            f"'{name}' does not roll its own reading of what a run found ({mark!r} "
+            f"found in its script):\n{body}",
+        )
+
+
+def body_fn() -> None:
+    expect(
+        WORKFLOW_PATH.is_file(),
+        f"the reusable gate this library ships is at {WORKFLOW_PATH}",
+    )
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    steps = steps_in(text)
+
+    gate_steps = {
+        "Verify the promises, and each service's own tests": {"--k8s_overlay", "--build_type"},
+        "Verify the promises on each additional overlay": {"--k8s_overlay", "--build_type"},
+        "Publish the images": {"--k8s_overlay", "--build_type", "--publish_images", "--run_outcomes"},
+    }
+    for name, subcommand_flags in gate_steps.items():
+        expect(name in steps, f"the workflow has a '{name}' step:\n{sorted(steps)}")
+        expect_is_the_command_itself(name, run_body(steps[name]), subcommand_flags)
+
+    # The two runs that loop over more than one overlay carry their own exit
+    # status forward explicitly, since a later step in the same script (
+    # moving results aside) would otherwise overwrite it with its own.
+    for name in (
+        "Verify the promises, and each service's own tests",
+        "Verify the promises on each additional overlay",
+    ):
+        script = run_body(steps[name])
+        expect(
+            "|| status=$?" in script and re.search(r"\bexit \$status\b", script),
+            f"'{name}' hands back `seal ci`'s own exit status, not one this "
+            f"script works out on its own:\n{script}",
+        )
+
+    # The results a caller gets back are read the same way the gate itself
+    # decided them -- through the CLI, not a second reading of the reports.
+    collect = run_body(steps["Read what each run found"])
+    expect(
+        "seal _tests-results" in collect,
+        f"'Read what each run found' reads results back through "
+        f"`seal _tests-results`, not a parser of its own:\n{collect}",
+    )
+    for mark in HAND_ROLLED_PARSER_MARKS:
+        expect(
+            mark not in collect,
+            f"and does not also roll one ({mark!r} found):\n{collect}",
+        )
+
+
+check(body_fn)

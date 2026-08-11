@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+`seal outcomes loop` reports a loop -- the rounds of the whole suite
+since the last one in which every promise held -- derived entirely from
+`.workspace/seal/outcome-history.jsonl` (see
+python/src/seal/outcome_history.py and outcome_loop.py). Nothing here
+starts an agent, or anything agent-shaped: the loop this promise is about is
+an agent's process (/rfcs/0013-regression-loop.md), and what a checkout can
+establish is only the reporting machinery built from a record, never that an
+agent actually converged anything.
+
+So this check drives that reporting directly. It writes the history file's
+own JSON Lines format by hand, one line per outcome per round -- the exact
+shape a real run leaves (`outcome`, `state`, `confirmation`, `at`, `run`,
+`scope`, `quarantined`), with `scope: "tree"` so each round reads as a round
+of the whole suite rather than a selection. Every timestamp is one this
+check chose, so the cycle and cap scenarios below are exact and cannot be
+made flaky by how fast the machine happens to run. No cluster, no session,
+no application code -- `seal outcomes loop` reads a project's own
+`outcomes/` tree and its history file, and that is all this builds.
+
+Four fixtures, because the prompt names three shapes that must be told
+apart and this is careful to keep them isolated rather than tripping two at
+once:
+
+- **A cycle.** A promise fixed, then broken again, inside one continuous red
+  streak -- stopped for that, well inside the default backstops (three
+  rounds, minutes apart).
+- **The iteration cap.** A chain where each round breaks a promise never
+  seen before -- no repeat, so no cycle -- caught by a small declared
+  `max_iterations` rather than the (irrelevant here) time backstop.
+- **The time cap.** The same shape -- no repeat, no cycle -- caught by a
+  small declared `max_minutes` instead, with the round count nowhere near
+  either backstop.
+- **Steady progress.** A loop fixing one promise a round with nothing ever
+  re-broken: read partway through, it has no reason to stop yet; read once
+  every promise holds, there is no loop in progress at all. Both are
+  asserted, because "not stuck" has two different endings and a check that
+  only tried the fully-green one would miss the case that matters more --
+  the loop still running, correctly not being told to stop.
+
+What this reading chose, where the prompt left it open:
+
+- **The limits are declared in `outcomes/seal-test-config.json`**,
+  the same file a real project's runners live in -- there is nowhere else a
+  project says where its own loop stops.
+- **A steadily-red promise rides along in the cycle fixture** rather than
+  the cycling one being alone in its suite. `outcomes/library/what-the-
+  project-promises/a-promise-that-keeps-changing-its-mind-is-named` is the
+  neighbouring promise that names a *flip rate*; this one only has to prove
+  a cycle is named, so the steady failure is here to make the fixture read
+  like a suite with more than one promise in it, not to be asserted on.
+
+Deliberately not asserted, because the prompt withholds it: that the named
+promise really is at fault, or that either backstop is the right number for
+any given project -- both are exactly what the prompt says this hands to a
+human rather than concludes.
+"""
+
+import json
+import sys
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, check, expect, project  # noqa: E402
+
+FAIL = "FAIL"
+PASS = "PASS"
+
+
+def _round(fixture, at: datetime, states: dict[str, str]) -> None:
+    """Append one round of the whole suite to the history file, in exactly
+    the shape a real run leaves (outcome_history.record()) -- one JSON
+    object per outcome, sharing a `run` id and carrying `scope: "tree"`,
+    which is what makes a run a round of the loop rather than a selection
+    somebody ran while working on one translation."""
+    run_id = uuid.uuid4().hex
+    path = fixture.root / ".workspace" / "seal" / "outcome-history.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as history:
+        for slug, state in states.items():
+            history.write(
+                json.dumps(
+                    {
+                        "outcome": slug,
+                        "state": state,
+                        "confirmation": None,
+                        "at": at.isoformat(),
+                        "run": run_id,
+                        "scope": "tree",
+                        "quarantined": False,
+                    }
+                )
+                + "\n"
+            )
+
+
+def _declare_loop(fixture, **limits: int) -> None:
+    fixture.write(
+        "outcomes/seal-test-config.json", json.dumps({"loop": limits}) + "\n"
+    )
+
+
+def _loop(fixture):
+    return seal("outcomes", "loop", cwd=fixture.root)
+
+
+BASE = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+
+def cycle_stops_the_loop() -> None:
+    flip = "cli/gating/flip-flops"
+    steady = "cli/gating/steady-fail"
+    with project("loop-cycle") as fixture:
+        fixture.write("outcomes/.gitkeep", "")  # an outcome tree, no runner needed
+
+        _round(fixture, BASE, {flip: FAIL, steady: FAIL})
+        _round(fixture, BASE + timedelta(minutes=1), {flip: PASS, steady: FAIL})
+        _round(fixture, BASE + timedelta(minutes=2), {flip: FAIL, steady: FAIL})
+
+        run = _loop(fixture)
+        expect(
+            run.status == 1,
+            f"a loop that fixed a promise and broke it again has a reason to stop:\n{run}",
+        )
+        expect(
+            f"Going in circles: {flip} -- fixed, and then broken again inside this loop"
+            in run.output,
+            f"and says which promise cycled:\n{run}",
+        )
+        expect(
+            f"Going in circles: {steady}" not in run.output,
+            f"a promise that has simply stayed red is not named as cycling:\n{run}",
+        )
+        expect(
+            "At the backstop" not in run.output,
+            f"three rounds minutes apart is nowhere near either default backstop -- "
+            f"the cycle is what stopped this, not a cap:\n{run}",
+        )
+        expect(
+            "Another round is not what settles this" in run.output,
+            f"and triage, not another iteration, is what the report points at:\n{run}",
+        )
+
+
+def a_never_repeating_chain_hits_the_iteration_cap() -> None:
+    a, b, c, d = (f"cli/build/{name}" for name in ("first", "second", "third", "fourth"))
+    with project("loop-iteration-cap") as fixture:
+        _declare_loop(fixture, max_iterations=3)
+
+        _round(fixture, BASE, {a: FAIL, b: PASS, c: PASS, d: PASS})
+        _round(fixture, BASE + timedelta(minutes=1), {a: FAIL, b: FAIL, c: PASS, d: PASS})
+        _round(fixture, BASE + timedelta(minutes=2), {a: FAIL, b: FAIL, c: FAIL, d: PASS})
+        _round(fixture, BASE + timedelta(minutes=3), {a: FAIL, b: FAIL, c: FAIL, d: FAIL})
+
+        run = _loop(fixture)
+        expect(
+            run.status == 1,
+            f"a chain that never repeats is still caught, by the cap:\n{run}",
+        )
+        expect(
+            "At the backstop: 4 round(s), which is the limit this project declares "
+            "('loop.max_iterations' in seal-test-config.json, 3)." in run.output,
+            f"and it names the declared limit it reached:\n{run}",
+        )
+        expect(
+            "Going in circles" not in run.output,
+            f"nothing here was ever fixed and re-broken, so it is the cap and not a "
+            f"cycle that stopped this:\n{run}",
+        )
+        expect(
+            "minute(s) of looping" not in run.output,
+            f"three minutes of elapsed time is nowhere near the default backstop -- "
+            f"the round count is what tripped, not the clock:\n{run}",
+        )
+
+
+def a_never_repeating_chain_hits_the_time_cap() -> None:
+    x, y = "cli/deploy/first", "cli/deploy/second"
+    with project("loop-time-cap") as fixture:
+        _declare_loop(fixture, max_minutes=5)
+
+        _round(fixture, BASE, {x: FAIL, y: PASS})
+        _round(fixture, BASE + timedelta(minutes=10), {x: FAIL, y: FAIL})
+
+        run = _loop(fixture)
+        expect(
+            run.status == 1,
+            f"a chain caught by elapsed time rather than round count still stops:\n{run}",
+        )
+        expect(
+            "At the backstop: 10 minute(s) of looping, which is the limit this "
+            "project declares ('loop.max_minutes' in seal-test-config.json, "
+            "5)." in run.output,
+            f"and it names the declared limit it reached:\n{run}",
+        )
+        expect(
+            "round(s), which is the limit" not in run.output,
+            f"two rounds is nowhere near the default iteration backstop -- elapsed "
+            f"time is what tripped this, not the round count:\n{run}",
+        )
+        expect(
+            "Going in circles" not in run.output,
+            f"nothing here was fixed and re-broken; only the clock caught this:\n{run}",
+        )
+
+
+def steady_progress_is_not_reported_as_stuck() -> None:
+    p, q = "cli/ui/first-fix", "cli/ui/second-fix"
+    with project("loop-steady") as fixture:
+        fixture.write("outcomes/.gitkeep", "")
+
+        _round(fixture, BASE, {p: FAIL, q: FAIL})
+        _round(fixture, BASE + timedelta(minutes=1), {p: PASS, q: FAIL})
+
+        mid = _loop(fixture)
+        expect(
+            mid.status == 0,
+            f"a loop that has fixed one promise and broken nothing yet has no reason "
+            f"to stop:\n{mid}",
+        )
+        expect(
+            "No reason to stop yet" in mid.output,
+            f"and says so, rather than leaving silence to be read as fine:\n{mid}",
+        )
+        expect(
+            "Going in circles" not in mid.output and "At the backstop" not in mid.output,
+            f"steady progress is not mistaken for either way of going nowhere:\n{mid}",
+        )
+
+        _round(fixture, BASE + timedelta(minutes=2), {p: PASS, q: PASS})
+        done = _loop(fixture)
+        expect(
+            done.status == 0 and "no loop in progress" in done.output,
+            f"and once every promise holds, there is no loop left to report on:\n{done}",
+        )
+
+
+def body() -> None:
+    cycle_stops_the_loop()
+    a_never_repeating_chain_hits_the_iteration_cap()
+    a_never_repeating_chain_hits_the_time_cap()
+    steady_progress_is_not_reported_as_stuck()
+
+
+check(body)

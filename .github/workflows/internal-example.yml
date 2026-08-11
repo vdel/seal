@@ -1,0 +1,219 @@
+name: "Internal: example (angular-django)"
+
+# The only project-specific piece of CI in this repo: it points the generic
+# reusable test workflow (`seal-ci.yml`) at `examples/angular-django/`. A
+# different project would copy this file and point `project_dir` at itself --
+# everything here is reusable as-is: this file never enumerates an app's own
+# variable/secret names, since `seal ci` resolves each service's own `.env`
+# through whatever providers that project declares (see
+# /rfcs/0006-credential-resolution.md at the repo root), the same way `seal up`
+# does for local dev.
+#
+# Building for a real environment, applying anything to a cluster, and
+# sealing credentials for one are all specific to whoever is deploying --
+# their registry, their cluster, their domain -- and deliberately out of
+# scope here. This file only points the reusable test workflow at a project.
+#
+# Three GitHub Actions quirks shape the job below (none is obvious from the
+# docs):
+#
+# - A job that calls a reusable workflow (`uses:`) can't also set
+#   `environment:` on itself (GitHub rejects the whole file). So every
+#   `vars.X` expression resolves at repo/org scope, not scoped to any GitHub
+#   Environment -- `gh_environment` passed to the reusable workflow only
+#   binds *its own* job to that Environment.
+# - `secrets.X` doesn't follow that same rule, though: GitHub only resolves
+#   an Environment-scoped secret for a reusable-workflow job at all if that
+#   secret was *also* named in this caller's own `secrets:` block -- even
+#   though the value passed is never used (this job isn't bound to any
+#   Environment, so the expression is empty here). Once that
+#   passthrough exists, the reusable workflow's own job -- which binds
+#   `environment: gh_environment` directly on itself -- has its `secrets.X`
+#   overridden with that Environment's own secret. Drop the passthrough and
+#   the value silently comes through empty even with the secret correctly set
+#   on the Environment. Set it directly on the matching GitHub Environment
+#   (Settings > Environments > dev > Secrets).
+# - A job calling a reusable workflow only grants the callee's job whatever
+#   `permissions:` this job declares (this repo's default GITHUB_TOKEN
+#   permissions are read-only) -- so `permissions:` below must cover whatever
+#   seal-ci.yml's own jobs request, or the run fails at startup with 0 jobs
+#   scheduled. It requests `contents: read` and nothing else: what a run
+#   found comes back as outputs for this file to do something with, so the
+#   scopes that publishing a check needs are declared on the job below that
+#   publishes it rather than granted to the reusable workflow.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_call:
+    inputs:
+      ref:
+        description: "Branch name or SHA to check out."
+        required: false
+        type: string
+
+jobs:
+  tests:
+    uses: ./.github/workflows/seal-ci.yml
+    permissions:
+      contents: read
+    with:
+      project_dir: examples/angular-django
+      gh_environment: dev
+      ref: ${{ inputs.ref }}
+      # The overlay this example is developed in, and the one `seal up`
+      # brings up by default -- see its root Tiltfile's
+      # select_k8s_overlay(default_overlay='dev'). Named here rather than
+      # left implicit because the gate has to state which shape it verified.
+      k8s_overlay: dev
+      # The shape a real environment runs: no dev server, the built bundle
+      # served by nginx, and the api's environment split across a ConfigMap
+      # and a Secret (see examples/angular-django/k8s/README.md). The same
+      # promises are verified against it, which is what a second shape is
+      # for -- a container removed, static files served differently and a
+      # pod built from a different set of objects are exactly what a dev
+      # server hides.
+      additional_k8s_overlays: '["non-dev"]'
+      # No registry to push to: the example's default_registry() names a
+      # placeholder, so there is nothing this repo's own CI could publish.
+      publish_images: false
+      # runs_on is left at seal-ci.yml's own 'ubuntu-latest' default --
+      # this job needs nothing beyond a reachable Docker daemon, which it
+      # installs everything else (uv, Tilt, ctlptl, kubectl, kind, rsync)
+      # on top of itself.
+      # provider_setup is deliberately not passed. This example's services
+      # declare no provider at all: their `.env` files hold literals and
+      # `k8s://` markers, so nothing here reaches a password manager and
+      # there is no CLI to install or log in to. That is the case worth
+      # demonstrating first -- a project should not have to say it uses
+      # nothing.
+      #
+      # A project that does keep secrets in a store passes its own setup,
+      # and its own secret, like this:
+      #
+      #     provider_setup: |
+      #       curl -fsSL https://example.invalid/install.sh | bash
+      #       echo "$SEAL_PROVIDER_TOKEN" | its-cli login
+      #   secrets:
+      #     provider_token: ${{ secrets.WHATEVER_IT_CALLS_ITS_TOKEN }}
+      #
+      # The passthrough matters as much as the value: see the note at the
+      # top of this file. seal-ci.yml's own job binds `environment: dev`, so
+      # it is that Environment's own secret that reaches `provider_setup` --
+      # but only if this caller names it here too, even though what this
+      # expression resolves to in this job's Environment-unbound scope is
+      # nothing.
+
+  report:
+    # What a project does with its results is the project's own business, so
+    # it happens here rather than in the reusable workflow -- which reads the
+    # reports and hands back both what they say (the `results` output) and the
+    # reports themselves (an artifact, named by `results_artifact`). This
+    # project publishes a check per shape from the reports.
+    #
+    # The write scopes live here, on the job that actually needs them, rather
+    # than being something every caller of the reusable workflow has to grant
+    # it.
+    needs: tests
+    # Empty only when the run died before it could say which shapes it was
+    # going to verify, which leaves nothing to report under -- and a
+    # fromJSON('') that would fail this job on top of the one that already
+    # failed.
+    if: (!cancelled()) && needs.tests.outputs.overlays != ''
+    # Hosted, whatever the build ran on (see seal-ci.yml's runs_on input):
+    # publish-unit-test-result-action is a Docker-container action, and
+    # GitHub pre-pulls the image of every such action referenced in a job,
+    # before that job's first step and regardless of any `if:`. Keeping it in
+    # a job of its own is what lets the build target a runner that has to
+    # bring its own Docker daemon up.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+
+    strategy:
+      # One check per overlay: two result sets in one pull request are two
+      # different claims -- "the promises hold on the shape we work in" and
+      # "they hold on the shape that ships" -- and a reader deciding whether
+      # to merge needs to see which one went red.
+      fail-fast: false
+      matrix:
+        overlay: ${{ fromJSON(needs.tests.outputs.overlays) }}
+
+    steps:
+    - name: Download the reports
+      id: download
+      # A build that failed before any service produced results uploads no
+      # artifact at all, which is a normal outcome worth reporting nothing
+      # for -- not a reason to fail this job on top of the one that already
+      # failed. The `summary` job below says so from the `results` output,
+      # which needs no artifact to be readable.
+      continue-on-error: true
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ needs.tests.outputs.results_artifact }}
+        path: tests-results
+
+    - name: Publish Test Results
+      if: steps.download.outcome == 'success'
+      uses: EnricoMi/publish-unit-test-result-action@v2
+      with:
+        # The artifact is laid out as '<overlay>/<service>/junit.xml', so
+        # this reaches every service's own report and every outcome's alike
+        # -- both the test stage and the outcome runners write JUnit XML.
+        files: |
+          tests-results/${{ matrix.overlay }}/**/junit.xml
+        check_name: "Test Results (${{ matrix.overlay }})"
+
+  summary:
+    # The other half of what the reusable workflow hands back, and the reason
+    # it hands back a reading as well as the reports: a shape whose run died
+    # before writing a single report has nothing for the checks above to
+    # publish, and looks from them exactly like a shape that was never asked
+    # for. `results` says which it was, without an artifact to download and
+    # needing no permissions at all.
+    needs: tests
+    if: (!cancelled()) && needs.tests.outputs.results != ''
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Say what each shape's run found
+      env:
+        # Through the environment rather than interpolated into the script:
+        # the results carry test names, which are whatever somebody called a
+        # test.
+        SEAL_RESULTS: ${{ needs.tests.outputs.results }}
+      run: |
+        python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+        import json, os
+
+        def tests(count):
+            return "{} test{}".format(count, "" if count == 1 else "s")
+
+        for overlay, run in json.loads(os.environ["SEAL_RESULTS"]).items():
+            print("## {} -- {}".format(overlay, "passed" if run["passed"] else "FAILED"))
+            print()
+            print("{}, {} failed, {} skipped".format(
+                tests(run["cases"]), run["failed"], run["skipped"],
+            ))
+            print()
+            # A problem is a reason the results cannot be believed rather
+            # than a test that failed -- a run that produced nothing, a
+            # report that did not parse -- so it is the line the checks
+            # cannot carry.
+            for problem in run["problems"]:
+                print("- {}".format(problem))
+            for source in run["sources"]:
+                print("- **{}** ({}): {}, {} failed, {} skipped".format(
+                    source["name"], "ok" if source["passed"] else "FAILED",
+                    tests(source["cases"]),
+                    len(source["failed"]) + source["failed_omitted"],
+                    source["skipped"],
+                ))
+                for problem in source["problems"]:
+                    print("  - {}".format(problem))
+            print()
+        PY

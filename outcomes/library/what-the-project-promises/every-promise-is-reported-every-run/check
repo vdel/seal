@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+A listing that leaves a promise out is indistinguishable from one where it
+was kept, so what this asserts is that everything the tree holds comes back
+in every run -- including the promises after the one that failed, which is
+where a suite that reports less than everything usually starts.
+
+What this reading chose, where the prompt left it open:
+
+- **Four promises, the second of which fails.** Enough that "the ones after
+  it" is a real question. The prompt says nothing about order or format, so
+  neither does this: what is asserted is that each promise appears and that
+  the count matches the tree, not where or how.
+- **The narrowed run is a separate shape, not a smaller suite.** Somebody
+  iterating on one translation is a different thing from a run that dropped
+  three promises, and the promise is that the two do not look alike.
+
+Deliberately not asserted, because the prompt withholds it: the order
+promises come back in, the format they come back in, and that every promise
+*ran* -- one nothing has been translated from is reported as exactly that,
+which is a different promise's business.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import seal, check, expect, project  # noqa: E402
+
+KEPT = "#!/bin/sh\nexit 0\n"
+BROKEN = "#!/bin/sh\nexit 1\n"
+PROMISES = ("one", "two", "three", "four")
+
+
+def _points(run) -> list[str]:
+    """The run's test points, in the order they were reported."""
+    return [
+        line.strip()
+        for line in run.output.splitlines()
+        if line.startswith(("ok ", "not ok "))
+    ]
+
+
+def _first_reported(run) -> str:
+    """The promise this project's run reports on first, by its own order."""
+    return _points(run)[0].rsplit("/", 1)[-1]
+
+
+def body() -> None:
+    with project("reporting") as fixture:
+        fixture.tiltfile().service("api", env="GREETING=hello\n")
+        fixture.deployment("api")
+        fixture.codeowners("/outcomes/ @owner\n")
+        fixture.group("cli")
+        for name in PROMISES:
+            fixture.promise("cli", "gating", name, translation={"check": KEPT})
+        # One of four fails. Which one is chosen so that the run has
+        # promises left to report when it happens -- the promise says
+        # nothing about the order they come back in, so the fixture reads
+        # the order out of the run rather than assuming one.
+        failing = _first_reported(seal("outcomes", "run", "--all", cwd=fixture.root))
+        fixture.write(f"outcomes/cli/gating/{failing}/check", BROKEN, executable=True)
+
+        run = seal("outcomes", "run", "--all", cwd=fixture.root)
+
+        for name in PROMISES:
+            expect(
+                f"cli/gating/{name}" in run.output,
+                f"every promise is reported, kept or not -- {name}:\n{run}",
+            )
+        expect(
+            f"{len(PROMISES)} outcome(s)" in run.output,
+            f"and the count is the tree's:\n{run}",
+        )
+        points = _points(run)
+        failed_at = [index for index, point in enumerate(points) if point.startswith("not ok")]
+        expect(
+            len(failed_at) == 1 and failed_at[0] < len(points) - 1,
+            f"a failure does not stop the promises behind it being run:\n{run}",
+        )
+
+        # A run covering fewer than all of them is a different thing, and
+        # says so in as many words -- a short green listing that read as the
+        # suite's own verdict is the one thing this must never produce.
+        narrowed = seal("outcomes", "run", "cli/gating/one", cwd=fixture.root)
+        expect(
+            narrowed.status == 0,
+            f"a narrowed run reports what it covered:\n{narrowed}",
+        )
+        expect(
+            "did not run" in narrowed.output,
+            f"and says what it left out rather than leaving it to be inferred:\n{narrowed}",
+        )
+        expect(
+            f"of {len(PROMISES)} outcome(s)" in narrowed.output,
+            f"naming how many the tree holds, not only how many it started:\n{narrowed}",
+        )
+
+
+check(body)

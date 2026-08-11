@@ -1,0 +1,570 @@
+"""The contract `.github/workflows/seal-ci.yml` holds, read off the file itself.
+
+Two of its properties are load-bearing and neither has anywhere else to fail.
+
+A flag the workflow passes has to be one the Tilt extension defines: rename
+one on the Starlark side and CI keeps passing the old spelling, which Tilt
+rejects at parse time -- in a pipeline, on somebody else's pull request,
+with nothing in this repository having noticed.
+
+And every run has to be one `seal ci` a person can type. That is what makes a
+red gate reproducible, which is the whole reason a second overlay is an
+additional gate rather than a replacement for the one the local loop runs
+(see /rfcs/0008-run-axes.md). It stops being true the moment a step reaches
+for something the CLI cannot do, and nothing but a test says so.
+"""
+
+import re
+import shlex
+import subprocess
+from pathlib import Path
+
+import pytest
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "seal-ci.yml"
+CALLER = REPO_ROOT / ".github" / "workflows" / "internal-example.yml"
+CONFIG_TILTFILE = REPO_ROOT / "tilt" / "seal" / "config.Tiltfile"
+
+# What `seal ci` is invoked as, wherever it appears. Split on the `--` Tilt
+# uses to separate its own arguments from a Tiltfile's config flags.
+SEAL_CI = "seal ci --"
+
+
+def _workflow() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def _workflow_call_inputs() -> dict:
+    # `on` is read back as the boolean True: YAML 1.1 spells `true` several
+    # ways and this is one of them, which every GitHub workflow trips over.
+    workflow = _workflow()
+    return workflow[True]["workflow_call"]["inputs"]
+
+
+def _steps() -> list[dict]:
+    return _workflow()["jobs"]["tests"]["steps"]
+
+
+def _run_scripts() -> list[str]:
+    return [step["run"] for step in _steps() if "run" in step]
+
+
+def _seal_ci_invocations() -> list[list[str]]:
+    """Every `seal ci` the file runs, as the config flags it passes.
+
+    Line continuations are folded first: an invocation is written across
+    several lines to stay readable, and the flags on the later ones are as
+    much part of it as the ones on the first. Matched through the `uvx` that
+    runs it, so a line merely naming the command -- a log group's label, a
+    comment quoting what is about to run -- is not read as one."""
+    invocations = []
+    for script in _run_scripts():
+        for line in script.replace("\\\n", " ").splitlines():
+            if not re.search(r"\buvx\b.*" + re.escape(SEAL_CI), line):
+                continue
+            invocations.append(shlex.split(line.split(SEAL_CI, 1)[1]))
+    return invocations
+
+
+def _defined_flags() -> set[str]:
+    """The Tiltfile config flags the extension declares, read from the
+    Starlark rather than restated here -- a list written out in this file
+    would agree with itself while disagreeing with Tilt."""
+    return set(
+        re.findall(
+            r"config\.define_(?:string|bool|string_list)\('([^']+)'\)",
+            CONFIG_TILTFILE.read_text(encoding="utf-8"),
+        )
+    )
+
+
+def _flags_passed(invocation: list[str]) -> set[str]:
+    return {
+        token.split("=", 1)[0].removeprefix("--")
+        for token in invocation
+        if token.startswith("--")
+    }
+
+
+# --- the inputs a project fills in -----------------------------------------
+
+
+@pytest.fixture(scope="module")
+def inputs() -> dict:
+    return _workflow_call_inputs()
+
+
+def test_a_project_says_which_overlay_the_gate_deploys(inputs):
+    """Required, and with no default: an overlay is a directory a project
+    named, so there is no value this file could supply. A gate that picked
+    one would be picking which shape a merge rests on."""
+    assert inputs["k8s_overlay"]["required"] is True
+    assert "default" not in inputs["k8s_overlay"]
+
+
+def test_further_shapes_are_optional_and_a_project_has_none_by_default(inputs):
+    """How much a second shape adds depends entirely on what that overlay
+    changes, so whether to have one is the project's call and not this
+    file's."""
+    assert inputs["additional_k8s_overlays"]["required"] is False
+    assert yaml.safe_load(inputs["additional_k8s_overlays"]["default"]) == []
+
+
+def test_publishing_is_asked_for_rather_than_inferred(inputs):
+    """A boolean of its own, and required: inferring it from an overlay name
+    is what makes deploying a production-shaped overlay on a throwaway
+    cluster start pushing images."""
+    assert inputs["publish_images"]["type"] == "boolean"
+    assert inputs["publish_images"]["required"] is True
+
+
+def test_a_publishing_run_still_names_a_shape(inputs):
+    """Publishing means deploying something and letting Tilt push what it
+    built, so it names an overlay like every other run. Optional in the
+    schema because a project that never publishes has nothing to say here;
+    the run itself refuses to guess."""
+    assert "publish_k8s_overlay" in inputs
+
+    publish_step = next(
+        step for step in _steps() if step["name"] == "Publish the images"
+    )
+
+    assert "publish_k8s_overlay names no overlay" in publish_step["run"]
+
+
+# --- what the runs actually do ---------------------------------------------
+
+
+def test_every_run_is_one_command_somebody_can_type():
+    """The local-reproducibility requirement. A step reaching for `tilt`
+    directly, or for a flag `seal ci` does not forward, would give this
+    pipeline a capability the local loop does not have -- and a red gate
+    nobody can reproduce is one nobody can act on."""
+    assert _seal_ci_invocations(), "no seal ci invocation found at all"
+
+    # Comments stripped first: they are where the file explains what `seal
+    # ci` does with `tilt ci`, and prose about a command is not a call to it.
+    commands = "\n".join(
+        line
+        for script in _run_scripts()
+        for line in script.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+    # `tilt` only ever through the CLI: the bare binary would be a run this
+    # file knows how to do and a developer does not.
+    assert not re.search(r"(?<![-\w/])tilt ", commands)
+
+
+def test_every_flag_the_workflow_passes_is_one_the_extension_defines():
+    """The agreement that has nowhere else to fail. Tilt rejects an
+    unrecognised config flag at parse time, so a rename on the Starlark side
+    turns every project's pipeline red at once, without a single test in this
+    repository going red first."""
+    defined = _defined_flags()
+
+    for invocation in _seal_ci_invocations():
+        assert _flags_passed(invocation) <= defined, (
+            "seal ci -- {} passes a flag config.Tiltfile does not define".format(
+                " ".join(invocation)
+            )
+        )
+
+
+def test_the_gate_runs_a_shape_and_says_which():
+    """Every run names its overlay. Left unsaid it would deploy whichever one
+    the project's own select_k8s_overlay() defaults to, which makes the shape
+    a merge rests on a property of the project's Tiltfile rather than of the
+    pipeline that gated it."""
+    for invocation in _seal_ci_invocations():
+        assert "k8s_overlay" in _flags_passed(invocation)
+
+
+def test_one_run_builds_test_images_and_the_additional_ones_do_not():
+    """The primary overlay's run is the only one that executes a service's
+    own tests, because it is the only one building images that carry a suite.
+    An additional shape runs the promises against what a real environment
+    runs -- a property of those images, not a policy."""
+    build_types = [
+        invocation[invocation.index("--build_type") + 1]
+        for invocation in _seal_ci_invocations()
+        if "--build_type" in invocation
+    ]
+
+    assert build_types.count("test") == 1
+    assert set(build_types) == {"test", "runtime"}
+
+
+def test_only_the_publishing_run_publishes_and_it_reads_no_promises():
+    """`--publish_images` on a gate run would push before a single promise
+    had been read, because Tilt pushes when it deploys rather than when a run
+    succeeds. And the publishing run is not a gate: the promises were read
+    against these same images by the runs it waited for."""
+    invocations = _seal_ci_invocations()
+    publishing = [i for i in invocations if "publish_images" in _flags_passed(i)]
+    gates = [i for i in invocations if "publish_images" not in _flags_passed(i)]
+
+    assert len(publishing) == 1
+    assert "--run_outcomes" in publishing[0]
+    assert publishing[0][publishing[0].index("--run_outcomes") + 1] == "false"
+
+    assert gates, "every run publishes, so none of them is a gate"
+    for gate in gates:
+        assert "run_outcomes" not in _flags_passed(gate)
+
+
+def test_publishing_waits_for_every_gate_to_have_passed():
+    """`success()` rather than the input alone. A step that only checked
+    whether publishing was asked for would publish alongside a red gate,
+    which is the ordering this whole arrangement exists to get right."""
+    publish_step = next(
+        step for step in _steps() if step["name"] == "Publish the images"
+    )
+
+    assert "success()" in publish_step["if"]
+    assert "inputs.publish_images" in publish_step["if"]
+
+
+def test_each_run_starts_from_a_cluster_with_nothing_on_it():
+    """An object the next overlay does not declare keeps running otherwise,
+    so a promise can be kept by a container the shape under test removed.
+    That failure is silent and green, which is worse than no second shape at
+    all."""
+    seal_ci_steps = [
+        step for step in _steps() if "run" in step and SEAL_CI in step["run"]
+    ]
+
+    assert seal_ci_steps
+    for step in seal_ci_steps:
+        assert "fresh-cluster.sh" in step["run"], step["name"]
+
+
+# --- what a reader gets back -----------------------------------------------
+
+
+def test_every_shape_the_run_verified_is_in_what_the_caller_gets_back():
+    """Two result sets in one pull request are two different claims, and
+    somebody deciding whether to merge has to see which of them went red. So
+    the results are keyed by overlay -- the primary one and every additional
+    one -- rather than added up into a single verdict the caller cannot take
+    apart."""
+    collect = next(
+        step for step in _steps() if step.get("id") == "collect"
+    )
+
+    # One --run per shape: the primary one by name, the additional ones read
+    # from the file the plan step wrote.
+    assert '--run "$PRIMARY_K8S_OVERLAY=' in collect["run"]
+    assert '--run "$overlay=' in collect["run"]
+    assert "additional-overlays" in collect["run"]
+
+    # And it happens whatever the gates said. A failed run's results are the
+    # ones somebody needs.
+    assert "!cancelled()" in collect["if"]
+
+
+def test_the_caller_is_handed_the_results_rather_than_a_report_of_them():
+    """How a project's results are presented is the project's own policy. A
+    reporting action pinned in here is one every adopting project inherits --
+    along with the write scopes it needs on their pull requests and the kind
+    of runner it happens to require -- so this file hands back what the runs
+    found and stops there."""
+    # `on` reads back as the boolean True -- see _workflow_call_inputs().
+    outputs = _workflow()[True]["workflow_call"]["outputs"]
+
+    assert {"overlays", "results", "results_artifact"} <= set(outputs)
+
+    for job_name, job in _workflow()["jobs"].items():
+        for scope in job.get("permissions", {}):
+            assert scope == "contents", (
+                "job '{}' asks a caller for '{}' -- the reusable workflow "
+                "reads a repository and reports nothing to it".format(job_name, scope)
+            )
+
+
+def test_the_results_are_read_by_the_cli_that_decided_the_run_s_own_verdict():
+    """A rendering that parsed the reports here would be a second answer to
+    the question `seal ci` already answered, free to disagree with it -- and
+    the disagreement would surface as a green gate whose results say a test
+    failed, or the reverse."""
+    collect = next(step for step in _steps() if step.get("id") == "collect")
+
+    assert "seal _tests-results" in collect["run"]
+
+
+def test_the_reports_themselves_survive_the_run_that_produced_them():
+    """The `results` output carries what the reports say, not the reports:
+    it is a string with a size limit, and the coverage sitting beside them
+    isn't JUnit at all. A caller wanting either downloads the artifact, so
+    the workflow has to name it back."""
+    upload = next(
+        step for step in _steps() if step.get("uses", "").startswith("actions/upload-artifact")
+    )
+    inputs = _workflow_call_inputs()
+
+    assert upload["with"]["name"] == "${{ inputs.results_artifact }}"
+    assert "results_artifact" in inputs
+    # Kept only long enough for the caller's own reporting to read it, in the
+    # same run. What somebody comes back to later is what that reporting
+    # published.
+    assert upload["with"]["retention-days"] == "${{ inputs.results_retention_days }}"
+    assert inputs["results_retention_days"]["default"] > 0
+
+
+def test_the_worked_example_does_something_with_everything_it_is_handed():
+    """The one assertion above that says the outputs are usable rather than
+    merely declared. Without a caller reading them, `results` is a string
+    nothing has ever parsed -- and the failure that would find out is an
+    adopting project's, on their pull request.
+
+    All three, because they answer different questions: which shapes ran,
+    what each of their runs found, and where the reports themselves are. A
+    caller reaching for one of them proves nothing about the other two.
+    """
+    jobs = yaml.safe_load(CALLER.read_text(encoding="utf-8"))["jobs"]
+    consumers = {name: job for name, job in jobs.items() if job.get("needs") == "tests"}
+    body = str(consumers)
+
+    assert consumers, "nothing in the example reads what the workflow hands back"
+    for output in ("overlays", "results", "results_artifact"):
+        assert "needs.tests.outputs.{}".format(output) in body, output
+
+    # And each of them reports on a run that went red, which is the run whose
+    # results somebody actually needs.
+    for name, job in consumers.items():
+        assert "!cancelled()" in job["if"], name
+
+
+def test_the_worked_example_publishes_from_the_reports_and_not_from_the_reading():
+    """`results` says what the reports say; it is not the reports. An action
+    publishing a check wants the XML, so the example downloads the artifact
+    for it -- and takes the `checks: write` that needs on its own job, which
+    is the whole point of the reusable workflow no longer asking a caller
+    for it."""
+    report = yaml.safe_load(CALLER.read_text(encoding="utf-8"))["jobs"]["report"]
+    download = next(
+        step for step in report["steps"]
+        if step.get("uses", "").startswith("actions/download-artifact")
+    )
+
+    assert report["permissions"]["checks"] == "write"
+    assert download["with"]["name"] == "${{ needs.tests.outputs.results_artifact }}"
+    # A run that produced no results uploaded no artifact, which is not a
+    # reason to fail this job on top of the one that already failed.
+    assert download["continue-on-error"] is True
+
+    # One check per shape, named for it.
+    assert "needs.tests.outputs.overlays" in report["strategy"]["matrix"]["overlay"]
+    publish = next(step for step in report["steps"] if step["name"] == "Publish Test Results")
+    assert "${{ matrix.overlay }}" in publish["with"]["check_name"]
+    assert "${{ matrix.overlay }}" in publish["with"]["files"]
+
+
+def test_this_repo_s_own_caller_fills_in_what_the_workflow_now_requires():
+    """The worked example is the only caller here, so it is where a required
+    input nobody passes shows up -- as a workflow that fails to start, with
+    zero jobs scheduled and no test having run."""
+    passed = yaml.safe_load(CALLER.read_text(encoding="utf-8"))["jobs"]["tests"]["with"]
+    required = {
+        name
+        for name, spec in _workflow_call_inputs().items()
+        if spec.get("required")
+    }
+
+    assert required <= set(passed)
+
+
+# --- and that this repository actually exercises it -------------------------
+
+
+def test_the_worked_example_verifies_more_than_one_shape():
+    """Every assertion above is about what the workflow *can* do. This is the
+    one that says it is being done: the example grows a second overlay and the
+    caller names it, so `additional_k8s_overlays` is covered by a run rather
+    than by its own default.
+
+    Without this, deleting the overlay or dropping the input would return the
+    repository to proving nothing about a capability it ships, with every
+    other test still green."""
+    example = REPO_ROOT / "examples" / "angular-django"
+    overlays = {
+        path.name
+        for path in (example / "k8s").iterdir()
+        if path.is_dir() and (path / "kustomization.yaml").is_file()
+    }
+    passed = yaml.safe_load(CALLER.read_text(encoding="utf-8"))["jobs"]["tests"]["with"]
+    additional = yaml.safe_load(passed.get("additional_k8s_overlays") or "[]")
+
+    assert len(overlays) > 1, "the example deploys one shape, so it proves nothing"
+    assert additional, "the example has a second shape and the gate never runs it"
+    assert set(additional) <= overlays - {passed["k8s_overlay"]}
+
+
+def test_no_stale_spelling_of_a_service_s_test_target_survives():
+    """A rename across a repository fails by missing one quotation of it, and
+    what is left behind is a document telling a reader to run a target that
+    no longer exists. Every tracked file is read, not a chosen set of
+    suffixes: the last one missed here was a Dockerfile comment, which a
+    filter written from the obvious file types would have skipped."""
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split("\0")
+
+    # Assembled rather than written out, so this file is not itself a hit --
+    # which lets the search cover every tracked file with no exemption for
+    # the one doing the searching. Spelling it whole here would make the
+    # guard fail on itself, and the obvious fix for that (skipping this
+    # file) is a hole.
+    retired = "test-" + "ci"
+
+    stale = []
+    for name in filter(None, tracked):
+        path = REPO_ROOT / name
+        if not path.is_file():
+            continue
+        try:
+            body = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue  # not text, so not somewhere a command is written down
+        if retired in body:
+            stale.append(name)
+
+    assert stale == [], "these still name a target that does not exist: {}".format(stale)
+
+
+# Blocks GitHub Actions rejects when they are present but hold nothing.
+# Commenting out the last entry of one leaves the key behind with an empty
+# mapping under it, which is what makes this worth a test rather than care.
+CONFIGURATION_BLOCKS = (
+    "env",
+    "with",
+    "secrets",
+    "permissions",
+    "outputs",
+    "inputs",
+    "defaults",
+)
+
+
+def _empty_blocks(node, where: str) -> list[str]:
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in CONFIGURATION_BLOCKS and (value is None or value == {}):
+                found.append(f"{where}.{key}")
+            found.extend(_empty_blocks(value, f"{where}.{key}"))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found.extend(_empty_blocks(value, f"{where}[{index}]"))
+    return found
+
+
+@pytest.mark.parametrize(
+    "path",
+    sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")),
+    ids=lambda p: p.name,
+)
+def test_no_workflow_leaves_a_configuration_block_empty(path):
+    """An `env:` holding only comments is valid YAML and an invalid workflow.
+
+    GitHub rejects the file before scheduling anything, so the run fails
+    with no jobs and therefore no check runs -- and a pull request whose
+    other workflows passed looks green while its whole test suite never
+    ran. That is the one failure shape nothing else here would catch.
+    """
+    empty = _empty_blocks(yaml.safe_load(path.read_text(encoding="utf-8")), path.name)
+
+    assert not empty, (
+        f"{path.name} has nothing under {', '.join(empty)}. Delete the key: "
+        "GitHub rejects the workflow before scheduling a job, and a run that "
+        "schedules nothing reports no failing check."
+    )
+
+
+def test_installing_a_provider_is_the_callers_business():
+    """The workflow ships to projects keeping their secrets anywhere. What
+    puts a CLI on PATH and logs it in is the one thing only the caller
+    knows, so it is passed in rather than built in."""
+    inputs = _workflow_call_inputs()
+
+    assert "provider_setup" in inputs
+    assert not inputs["provider_setup"].get("required", False)
+    # Correct empty: a project whose `.env` files hold only literals and
+    # `k8s://` markers reaches no provider and should not have to say so.
+    assert inputs["provider_setup"].get("default", "") == ""
+
+    # `on` reads back as the boolean True -- see _workflow_call_inputs().
+    secrets = _workflow()[True]["workflow_call"]["secrets"]
+    assert "provider_token" in secrets
+    assert not secrets["provider_token"].get("required", False)
+
+
+def test_a_private_vendored_checkout_can_authenticate():
+    """The `python_dir` input invites a project to vendor this repo as a git
+    submodule. GITHUB_TOKEN can read only the repository whose workflow is
+    running, so a *private* submodule's clone fails before any step of the
+    job runs -- and nothing later can recover, since both the extensions and
+    the CLI resolve out of that checkout.
+
+    Optional, and falling back to GITHUB_TOKEN: a public submodule, or none
+    at all, needs nothing from the caller."""
+    # `on` reads back as the boolean True -- see _workflow_call_inputs().
+    secrets = _workflow()[True]["workflow_call"]["secrets"]
+    assert "source_repo_token" in secrets
+    assert not secrets["source_repo_token"].get("required", False)
+
+    checkout = [step for step in _steps() if step.get("uses", "").startswith("actions/checkout@")]
+    assert len(checkout) == 1, "one checkout, so there is one place a token has to reach"
+    with_ = checkout[0]["with"]
+    # Without this the token would authenticate the caller's own clone and
+    # leave the submodule -- the only thing that actually needs it -- to
+    # fail exactly as before.
+    assert with_["submodules"] is True
+    assert with_["token"] == "${{ secrets.source_repo_token || github.token }}"
+
+
+def test_the_setup_step_runs_what_the_caller_passed_before_seal_ci():
+    """No caller in this repository passes `provider_setup`, and none
+    honestly can: the worked example keeps literals precisely so its CI
+    does not depend on a store being reachable. So the step's behaviour is
+    guaranteed structurally rather than by having been run -- which is worth
+    saying plainly, because "it has never executed" is the thing a green
+    pipeline would otherwise imply the opposite of.
+
+    What is checked is the whole of the contract the input promises: the
+    shell is what runs, the token reaches it, it is skipped when nothing was
+    passed, and it happens before anything resolves a credential.
+    """
+    steps = _steps()
+    setup = [step for step in steps if "provider_setup" in str(step.get("run", ""))]
+
+    assert len(setup) == 1, "exactly one step runs the caller's setup"
+    step = setup[0]
+
+    # The shell the caller passed is the whole of what runs -- not wrapped,
+    # not appended to, so what a project debugs locally is what ran here.
+    assert step["run"].strip() == "${{ inputs.provider_setup }}"
+
+    # Skipped when nothing was passed. Without this a project reaching no
+    # provider runs an empty shell step, which is noise at best and a
+    # failing step on some runners.
+    assert "inputs.provider_setup" in step.get("if", "")
+
+    # The token reaches it under seal's own name, so the caller's secret can
+    # be called whatever that store calls it.
+    assert step["env"]["SEAL_PROVIDER_TOKEN"] == "${{ secrets.provider_token }}"
+
+    # Before every `seal ci`: a CLI installed after the first resolution is
+    # a CLI installed too late.
+    first_seal_ci = next(
+        index
+        for index, other in enumerate(steps)
+        if SEAL_CI in str(other.get("run", ""))
+    )
+    assert steps.index(step) < first_seal_ci

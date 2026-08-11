@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+The promise is that a project whose CODEOWNERS does not reach its outcome
+tree is refused, and *told which promises are uncovered*. Both halves are
+asserted here: a refusal that only said something was wrong would leave a
+project to find the uncovered path by bisecting its own CODEOWNERS.
+
+What the prompt leaves open, and what this reading chose:
+
+- **Which command asks.** `seal check` -- the one a project runs before
+  anything is built, and the one `seal ci` runs first. The promise is
+  about a project being refused, not about which of its entry points says so.
+- **What "uncovered" is demonstrated with.** Four shapes, because ownership
+  fails in more than one way: no rule at all, a later rule that matches and
+  names nobody, a rule that reaches only part of an outcome, and a tree with
+  nothing in it to own. The third is the one a project is most likely to
+  write by accident.
+
+Deliberately not asserted, because the prompt withholds it: that the named
+owners are the right people, and that the repository's branch protection
+enforces the review. The second is a platform setting no checkout can read.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import Project, seal, check, expect, project  # noqa: E402
+
+
+def a_project_with_promises(fixture: Project) -> Project:
+    """A project whose tree is well-formed, so what a run says about it is
+    about ownership and nothing else.
+
+    The promise covers everything under an outcome, so the tree holds more
+    than a prompt: a test, a fixture the test reads, and what the group's
+    tests share.
+    """
+    fixture.tiltfile().service("api", env="GREETING=hello\n")
+    fixture.deployment("api")
+    fixture.group("cli")
+    fixture.promise(
+        "cli",
+        "gating",
+        "a-promise",
+        translation={"check": "#!/bin/sh\nexit 0\n", "fixture.json": "{}\n"},
+    )
+    fixture.write("outcomes/cli/helpers/shared.py", "SHARED = 1\n")
+    return fixture
+
+
+def body() -> None:
+    with project("ownership") as fixture:
+        a_project_with_promises(fixture)
+
+        fixture.codeowners("/outcomes/ @owner\n")
+        covered = seal("check", cwd=fixture.root)
+        expect(
+            covered.status == 0,
+            f"a tree one rule covers is not refused for ownership:\n{covered}",
+        )
+
+        # Nothing gates anything: the shape where a specification reads as
+        # well-formed and can be edited by whoever is failing it.
+        fixture.remove("CODEOWNERS")
+        nothing = seal("check", cwd=fixture.root)
+        expect(nothing.status != 0, f"a tree nobody owns is refused:\n{nothing}")
+        expect(
+            "outcomes/" in nothing.output,
+            f"the refusal names the tree nobody owns, and how to cover it:\n{nothing}",
+        )
+
+        # A CODEOWNERS that exists and reaches nothing here. Refused for the
+        # same reason and reported differently: with a file to point at,
+        # what is uncovered can be named path by path.
+        fixture.write("CODEOWNERS", "/services/ @owner\n")
+        unowned = seal("check", cwd=fixture.root)
+        expect(unowned.status != 0, f"a tree no rule reaches is refused:\n{unowned}")
+        expect(
+            "outcomes/cli/gating/a-promise" in unowned.output,
+            f"the refusal names the promise nobody owns, not only that something is:\n{unowned}",
+        )
+        expect(
+            "outcomes/cli/helpers" in unowned.output,
+            f"what the group's tests share is held to this too:\n{unowned}",
+        )
+
+        # A rule that matches and names nobody, after one that covered the
+        # tree. Ownership is decided by the last rule that matches, so a
+        # later line can uncover what an earlier one covered -- and a project
+        # reading its CODEOWNERS top-down would not see it.
+        fixture.write("CODEOWNERS", "/outcomes/ @owner\n/outcomes/cli/gating/\n")
+        partly = seal("check", cwd=fixture.root)
+        expect(partly.status != 0, f"a tree a later rule uncovers is refused:\n{partly}")
+        expect(
+            "outcomes/cli/gating/a-promise" in partly.output,
+            f"the refusal names what the later rule left unowned:\n{partly}",
+        )
+
+        # A rule reaching the promise but not the test translated from it:
+        # the half of an outcome an agent would need to edit to make its own
+        # failure go away.
+        fixture.write("CODEOWNERS", "/outcomes/**/prompt.md @owner\n")
+        prompts_only = seal("check", cwd=fixture.root)
+        expect(
+            prompts_only.status != 0,
+            f"a rule covering prompts and not tests is refused:\n{prompts_only}",
+        )
+        expect(
+            "outcomes/cli/gating/a-promise" in prompts_only.output,
+            f"the refusal names the outcome whose test nobody owns:\n{prompts_only}",
+        )
+
+    # A project with no promises has nothing to own, and is not refused for
+    # it. Adopting one convention is not made to depend on adopting another.
+    with project("no-promises") as fixture:
+        fixture.tiltfile().service("api", env="GREETING=hello\n")
+        fixture.deployment("api")
+        fixture.codeowners("* @owner\n")
+        fixture.remove("CODEOWNERS")
+        nothing_to_own = seal("check", cwd=fixture.root)
+        expect(
+            nothing_to_own.status == 0,
+            f"a project promising nothing is not refused for owning nothing:\n{nothing_to_own}",
+        )
+
+
+check(body)

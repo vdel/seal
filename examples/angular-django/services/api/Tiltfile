@@ -1,0 +1,70 @@
+# Load helper functions
+load('ext://seal', 'seal_service', 'publish_images')
+
+# Same registry the root Tiltfile passes to default_registry() (see its own
+# comment there) -- config.Tiltfile's own docstring is explicit that
+# registry selection is this project's job, not the seal package's, so this
+# has to be repeated here rather than looked up from Tilt itself (Tilt
+# doesn't expose default_registry()'s value back to Starlark). Only used by
+# seal_service()'s SEAL_IMAGE_TAG-gated stable-tag push (see
+# /tilt/docker_build/README.md) -- irrelevant anywhere but a pipeline
+# actually publishing a build, since SEAL_IMAGE_TAG is otherwise unset and
+# this is never read.
+_REGISTRY = 'ghcr.io/your-org' if publish_images else None
+
+live_update=[
+    # Sync Python files for live reload
+    sync('./src', '/app/src'),
+    # Restart the Django server when model files change
+    run('uv run python src/manage.py migrate', trigger=['/app/src/**/models.py']),
+]
+
+# 'example-api' is this service's one identifier, everywhere: the
+# 'image:' placeholder and container name hardcoded in
+# k8s/dev/web/api/deployment.yaml, and its 'example-api-secrets'
+# Secret. The root Tiltfile's default_registry() call handles pushing the
+# image to the right registry; naming it here is this project's own
+# responsibility.
+#
+# seal_service() turns that service's .env into a k8s Secret (see
+# /rfcs/0006-credential-resolution.md), builds whichever of this service's own
+# Dockerfile stages the run's build type asks for, and -- because test_stage
+# is given -- registers this service's test pipeline. The three stage names
+# below are this Dockerfile's own; seal assumes none of them.
+#
+# `test_command` is what produces this service's report, run inside the
+# container once it is up rather than while the image is built. That is what
+# gives these tests the Postgres this service is actually configured
+# against.
+#
+# The `reset` below runs on both sides of that -- once so these tests start
+# from the baseline, once so the outcome suite does whatever they did. This
+# suite reads neither: pytest-django creates a `test_`-prefixed database of
+# its own and drops it afterwards. This container is merged into the shared 'web'
+# Deployment/pod (see k8s/dev/web), so point k8s_resource_name and
+# resource_dep at 'web', while service_name (also this container's own name
+# in that pod) keeps identifying this service's own tests-results/ directory
+# and its own seal_tests_verdict_example_api resource.
+#
+# `reset` is this service's own script for putting the state it owns --
+# Postgres tables and its Valkey broker -- back to a known baseline.
+# Declaring it here is what registers the 'seal_reset_example_api'
+# resource to trigger, and, in a test run, the
+# 'seal_tests_reset_example_api' that restores the same baseline ahead of
+# this service's own tests. `ui` declares none: it owns no state to put
+# back.
+seal_service(
+    'example-api',
+    context='.',
+    dockerfile='Dockerfile',
+    live_update=live_update,
+    k8s_resource_name='deploy/web',
+    resource_dep='web',
+    development_stage='development',
+    runtime_stage='runtime',
+    test_stage='test',
+    junit_tests_directory='/app/tests-results/',
+    test_command='make unit-tests',
+    registry=_REGISTRY,
+    reset='deploy/reset.sh',
+)

@@ -1,0 +1,122 @@
+name: "Internal: this repository's own promises"
+
+# What Seal promises an adopting project, checked by running it (see
+# /rfcs/0014-seal-on-seal.md). The tree at /outcomes/ states the
+# promises; this is where they are established.
+#
+# It runs here rather than only on a contributor's machine because several of
+# these promises are about bringing an environment up, and what establishes
+# one of those is a cluster. That is also why this is a workflow of its own:
+# it is the slowest gate in the repository, and the suites that need nothing
+# but a checkout should not wait behind it.
+#
+# How a run's results are presented -- a check, a comment, a summary -- is a
+# project's own decision, and this job makes none of them: the suite's exit
+# status is its verdict, and the job carries it.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # What the promises are about, and where they are written down. The
+      # checks build the projects they point commands at, so a change to the
+      # library is a change to what they would find.
+      - 'outcomes/**'
+      - 'python/**'
+      - 'tilt/**'
+      - '.github/workflows/internal-specification.yml'
+  pull_request:
+    paths:
+      - 'outcomes/**'
+      - 'python/**'
+      - 'tilt/**'
+      - '.github/workflows/internal-specification.yml'
+
+# One run of this suite per branch. It is the slowest gate here and it makes
+# a cluster of its own, so a superseded run is a runner nobody is waiting on
+# holding a cluster nobody will read.
+concurrency:
+  group: promises-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  promises:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Install Tilt
+        # A promise about bringing an environment up is established by
+        # bringing one up, and `seal up` and `seal ci` are Tilt
+        # underneath.
+        #
+        # From a scratch directory, not the checkout: tilt-dev's install.sh
+        # extracts the release tarball's "tilt" member into the current
+        # working directory before moving it onto PATH, and this repository
+        # has a top-level tilt/ directory for it to collide with.
+        working-directory: ${{ runner.temp }}
+        run: curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
+
+      - name: Install ctlptl
+        # What gets a local cluster, for the checks that need one. kubectl and
+        # a container runtime are already on this runner; kind comes with
+        # ctlptl's own cluster creation.
+        run: |
+          version=0.8.44
+          curl -fsSL "https://github.com/tilt-dev/ctlptl/releases/download/v$version/ctlptl.$version.linux.x86_64.tar.gz" \
+            | sudo tar -xzC /usr/local/bin ctlptl
+          curl -fsSLo kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64
+          sudo install -m755 kind /usr/local/bin/kind
+
+      - name: Say what this machine has
+        # The suite reports a promise it could not run as one nothing
+        # established, which is right and is also silent about why. This is
+        # where the why is: what was on the machine when the run started.
+        run: |
+          uv --version
+          tilt version
+          kubectl version --client
+          kind --version
+          ctlptl version
+          rsync --version | head -1
+          docker version --format '{{.Server.Version}}'
+
+      - name: Run what this repository promises
+        run: uv run --project python seal outcomes run --all
+
+      - name: Say what a red run said
+        # What a group printed while it ran, which for a group run on the
+        # machine is the whole account of every promise in it -- including
+        # whatever a check said about the one it could not keep. A failure
+        # whose account is only inside an artifact is one somebody has to
+        # fetch a zip for before they can start reading.
+        if: failure()
+        run: |
+          found=""
+          for log in tests-results/outcomes/*/run.log; do
+            [ -f "$log" ] || continue
+            found=yes
+            echo "----- $log (what it said about the promise it gave up on) -----"
+            # From the last check that gave up, rather than the whole run: a
+            # group's log is every promise in it, and what a reader wants is
+            # the one that failed, at the end where a glance lands.
+            awk '/promise not kept:|cannot run:|the check itself raised/ { keep = "" } { keep = keep $0 "\n" } END { printf "%s", keep }' "$log" | tail -60
+          done
+          [ -n "$found" ] || echo "no group left a run log behind"
+
+      - name: Keep what the run left
+        # The account of every promise, kept whether the run was green or
+        # not: a failure's own output is what somebody reads first, and a
+        # green run is where the next failure gets compared against.
+        if: (!cancelled())
+        uses: actions/upload-artifact@v4
+        with:
+          name: outcome-results
+          path: tests-results/outcomes/
+          if-no-files-found: warn

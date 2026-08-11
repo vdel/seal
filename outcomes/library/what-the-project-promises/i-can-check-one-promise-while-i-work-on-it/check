@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+Somebody iterating on one translation runs that one promise, against the
+environment already running, without paying for the rest. So the fixture is
+a project with a session and promises of its own: a service, and a group
+whose runner the project brought, with three promises in it.
+
+The run that matters is the second one. Against a session left running --
+the shape somebody iterating in one actually has -- every promise is read
+once, and then one promise is named on the command line. The check reads
+three things out of what comes back:
+
+- **It ran that one.** Reported, with the verdict the whole suite gave it.
+- **It ran against the session already up.** The service's container is the
+  same one, still running since the first run: a narrow run that rebuilt
+  the environment would be a slow preview of a different environment.
+- **It says what it left out.** A short green listing that read as the
+  suite's own verdict is the one thing this must never produce, and the
+  prompt says so in as many words.
+
+The session gets a port of its own, and every command in this check is told
+it. A session serves on one port and the CLI talks to that port, so a check
+that borrowed the default would be asking about whichever session the
+machine happened to have -- which is not this project's, and answers a
+command aimed at it with a token that is not its.
+
+What this reading chose: the promises are checked by a runner the fixture
+project brought, deployed into the session like any other. That is what
+makes "the same images and the same containers" a question worth asking --
+a group that ran on the machine would answer it trivially and establish
+nothing about a session.
+
+Deliberately not asserted, because the prompt withholds it: anything about
+the promises the narrow run left out beyond that it says so, and that a
+merge rests on this -- a gate on the tests somebody remembered is the
+judgement the gate exists to replace.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import a_session, seal, check, expect, kubectl, project  # noqa: E402
+from helpers.projects import container  # noqa: E402
+
+SERVES = """FROM busybox:1.36
+RUN mkdir -p /www && printf 'serving\\n' > /www/index.html
+CMD ["httpd", "-f", "-p", "8080", "-h", "/www"]
+"""
+
+PROBE = {"httpGet": {"path": "/", "port": 8080}, "periodSeconds": 2, "failureThreshold": 30}
+
+# The runner this project brought. It meets the container contract: a
+# verdict per outcome it was told to cover, a marker when the whole run has
+# finished, and it stays up afterwards so the results can be copied out.
+RUNNER = """FROM alpine:3.20
+# curl to reach the application; rsync because that is how what a runner
+# wrote comes back out of the container it wrote it in.
+RUN apk add --no-cache curl rsync
+COPY . /group
+# An entrypoint, not a command: seal starts this image with the
+# outcomes to cover as arguments, and a command is what arguments replace.
+ENTRYPOINT ["sh", "/group/run.sh"]
+"""
+
+RUN = """#!/bin/sh
+# Arguments up to `--` are this runner's own; everything after is an
+# outcome to cover.
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
+[ "${1:-}" = "--" ] && shift
+
+for slug in "$@"; do
+  mkdir -p "/outcome-results/$slug"
+  # Every promise here is that the application answers where the project
+  # said it would, which is the one thing a runner in the session can ask
+  # without knowing anything about it.
+  if curl -fsS "$SEAL_BASE_URL/" > "/outcome-results/$slug/log.txt" 2>&1; then
+    printf '1' > "/outcome-results/$slug/passed"
+  else
+    printf '0' > "/outcome-results/$slug/passed"
+  fi
+done
+: > /outcome-results/done
+sleep infinity
+"""
+
+PROMISES = ("the-page-is-served", "it-is-still-served", "and-again")
+NARROWED = f"pages/{PROMISES[0]}"
+
+# Where this check's fixture put its results, so the evidence below can read
+# them after the project itself has gone out of scope.
+WHERE_RESULTS_LAND: list = [None]
+
+
+def evidence() -> None:
+    """What the session looked like when this check gave up.
+
+    A promise about a run against a session is only debuggable with the
+    session in front of you, and by the time anybody reads this the session
+    is gone. So whatever it was is printed where the run's own account is
+    kept.
+    """
+    for what, arguments in (
+        ("what was running", ("get", "pods", "-o", "wide")),
+        ("what the runner said", ("logs", "-l", "app=seal-outcomes-checks", "--tail=60")),
+    ):
+        said = kubectl(*arguments)
+        print(f"--- {what} ---\n{said.output}", file=sys.stderr)
+    results = fixture_results()
+    print(f"--- what came back from the session ---\n{results}", file=sys.stderr)
+
+
+def container_started_at() -> str:
+    """When this project's own application container started.
+
+    Named by its label and read from a pod that is actually running: the
+    cluster these checks share carries what other fixtures have not finished
+    taking away, and a terminating pod's timestamp is not this session's.
+    """
+    running = kubectl(
+        "get", "pod", "-l", "app=pages",
+        "--field-selector=status.phase=Running",
+        "-o", "jsonpath={.items[*].status.containerStatuses[0].state.running.startedAt}",
+    ).stdout.split()
+    return running[-1] if running else ""
+
+
+def body() -> None:
+    with project("one-promise") as fixture:
+        fixture.codeowners("* @owner\n")
+        fixture.service("pages", env="")
+        fixture.deploys(
+            "pages",
+            SERVES,
+            containers=[
+                container("pages", image="pages", probe=False) | {"readinessProbe": PROBE}
+            ],
+        )
+        fixture.registers_outcomes("http://pages:8080", waits_for=["pages"])
+        fixture.runners({"name": "checks", "runner_type": "custom"})
+        fixture.write("outcomes/checks/Dockerfile", RUNNER)
+        fixture.write("outcomes/checks/run.sh", RUN)
+        for name in PROMISES:
+            fixture.promise("checks", "pages", name, translation={"drives.sh": "# see run.sh\n"})
+        fixture.manifest(
+            "dev",
+            "pages-service",
+            {
+                "apiVersion": "v1",
+                "kind": "Service",
+                "metadata": {"name": "pages"},
+                "spec": {
+                    "selector": {"app": "pages"},
+                    "ports": [{"port": 8080, "targetPort": 8080}],
+                },
+            },
+        )
+
+        WHERE_RESULTS_LAND[0] = fixture.root / "tests-results" / "outcomes"
+        with a_session(fixture) as reaching_it:
+            whole = seal(
+                "outcomes", "run", "--all", cwd=fixture.root, env=reaching_it, timeout=1800
+            )
+            expect(
+                whole.status == 0,
+                f"the whole suite runs against the session:\n{whole}",
+            )
+            for name in PROMISES:
+                expect(
+                    f"checks/pages/{name}" in whole.output,
+                    f"and reports every promise -- {name}:\n{whole}",
+                )
+
+            was_running_since = container_started_at()
+            expect(was_running_since != "", "the session's container is running")
+
+            narrow = seal(
+                "outcomes", "run", f"checks/{NARROWED}",
+                cwd=fixture.root, env=reaching_it, timeout=900,
+            )
+            expect(
+                narrow.status == 0,
+                f"naming one promise runs it and reports it:\n{narrow}",
+            )
+            reported = [
+                line for line in narrow.output.splitlines()
+                if line.startswith(f"checks/{NARROWED} ")
+            ]
+            expect(
+                reported and "PASS" in reported[0],
+                f"with the verdict the whole suite gave it:\n{narrow}",
+            )
+            expect(
+                "did not run" in narrow.output and f"of {len(PROMISES)} outcome(s)" in narrow.output,
+                f"and it says what it left out rather than reading as the suite's "
+                f"own verdict:\n{narrow}",
+            )
+            expect(
+                container_started_at() == was_running_since,
+                "it ran against the session already up: the application's own "
+                f"container has been running since {was_running_since}, and a run "
+                "that had built a new environment would have started another",
+            )
+
+
+def fixture_results() -> str:
+    """What the run left in the fixture, which is where a verdict would be."""
+    root = WHERE_RESULTS_LAND[0]
+    if root is None or not root.is_dir():
+        return "nothing: the fixture left no results directory"
+    return "\n".join(
+        f"{path.relative_to(root)}"
+        + (f" = {path.read_text(encoding='utf-8')!r}" if path.is_file() and path.stat().st_size < 200 else "")
+        for path in sorted(root.rglob("*"))
+    )
+
+
+def body_with_evidence() -> None:
+    try:
+        body()
+    except BaseException:
+        evidence()
+        raise
+
+
+check(body_with_evidence)

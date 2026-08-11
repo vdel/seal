@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-beat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: celery-beat
+  template:
+    metadata:
+      labels:
+        app: celery-beat
+    spec:
+      containers:
+      - name: celery-beat
+        image: example-api
+        # Wait until the API has applied database migrations before starting the
+        # DatabaseScheduler-backed beat (avoids a startup race on a fresh database).
+        # The `touch` marks the point where the wait loop has exited and beat
+        # is about to take over this PID -- that file is what the
+        # readinessProbe below tests for. Without it the container reports
+        # Ready the instant the shell starts, i.e. while it is still waiting.
+        command: ["sh", "-c", "until uv run python /app/src/manage.py migrate --check >/dev/null 2>&1; do echo 'waiting for migrations...'; sleep 3; done; touch /tmp/beat-started; exec uv run celery -A config beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler"]
+        # DJANGO_SECRET_KEY / DEBUG are injected from services/api/.env,
+        # which seal fills into the object this overlay declares and
+        # annotates (../web/api/secrets.yaml). Which object carries
+        # which key is the overlay's own statement, not seal's:
+        # k8s/non-dev splits them across a ConfigMap and a Secret, and
+        # repoints this container at both. See /docs/credentials.md.
+        envFrom:
+          - secretRef:
+              name: example-api-secrets
+        # DATABASE_URL / CELERY_* are marked `k8s://` in services/api/.env:
+        # they point at the postgres/valkey Services bundled in this same
+        # overlay (k8s/dev/postgres, k8s/dev/valkey), so they're set here
+        # directly rather than resolved from a secret store.
+        env:
+        - name: DATABASE_URL
+          value: postgresql://app:app-dev-password@postgres:5432/app
+        - name: CELERY_BROKER_URL
+          value: redis://valkey:6379/0
+        - name: CELERY_RESULT_BACKEND
+          value: redis://valkey:6379/0
+        readinessProbe:
+          exec:
+            # Written by the command above, once its migrate-wait loop exits.
+            # Deliberately not a process check on beat itself: the shell's own
+            # command string contains the word "beat", so matching on it would
+            # pass while the loop was still running.
+            command: ["test", "-f", "/tmp/beat-started"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+        # resources:
+        #   requests:
+        #     memory: "128Mi"
+        #     cpu: "100m"
+        #   limits:
+        #     memory: "256Mi"
+        #     cpu: "200m"

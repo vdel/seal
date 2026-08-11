@@ -1,0 +1,68 @@
+# This project's entry point (see /tilt/README.md at the repo root):
+# registers this repo's seal extension, include()s each service's own
+# Tiltfile, and deploys the right Kubernetes overlay.
+
+# 'file://' + this repo's own checkout, not the published GitHub URL: this
+# project lives *inside* a checkout of seal itself
+# (examples/angular-django/), so this always exercises tilt/ as it actually
+# is on disk right now, uncommitted edits included. A project that instead
+# forked this template into its own, unrelated repo would point this at its
+# own fork's URL instead (or the published
+# https://github.com/vdel/autologate) -- see /tilt/README.md.
+v1alpha1.extension_repo(name='seal', url='file://' + os.path.join(config.main_dir, '..', '..'))
+v1alpha1.extension(name='seal', repo_name='seal', repo_path='tilt/seal')
+
+load('ext://seal', 'select_k8s_overlay', 'publish_images',
+     'register_outcome_runner', 'reset_resource_name', 'tests_run_resource_name')
+
+# Where built images go when a run publishes them. Tilt's own, unmodified
+# default_registry(), called directly -- which registry is this project's to
+# name, not seal's. Must run before any service's own Tiltfile is
+# include()d below: Tilt only rewrites image refs built *after* this call.
+if publish_images:
+    default_registry('ghcr.io/your-org')
+
+# Every service this project deploys. Put a dependency ahead of what
+# depends on it if that ever applies here (e.g. a third-party reverse proxy
+# other services build on top of) -- none of these three do.
+include('services/api/Tiltfile')
+include('services/ui/Tiltfile')
+include('third-party/nginx/Tiltfile')
+
+select_k8s_overlay(k8s_dir='k8s', default_overlay='dev')
+
+# The celery Deployments come from the overlay rather than a service
+# directory of their own (they run the api image, see k8s/dev/celery/), so
+# their Tilt resources are configured here rather than in a service's own
+# Tiltfile. Both need postgres and valkey answering before they start --
+# the worker's broker is valkey and beat's scheduler is database-backed --
+# and Tilt infers no such ordering from the manifests on its own. `web`
+# declares the same dependency in third-party/nginx/Tiltfile.
+k8s_resource('celery-worker', labels=['celery'], resource_deps=['postgres', 'valkey'])
+k8s_resource('celery-beat', labels=['celery'], resource_deps=['postgres', 'valkey'])
+
+# What this project promises, and the tests translated from those promises
+# (outcomes/, see /rfcs/0010-outcome-tree.md). They drive the application the way
+# somebody using it would, through nginx, which is `web` inside the cluster --
+# the port-forwards in third-party/nginx/Tiltfile are for a person at a
+# browser and don't outlive a Tilt session.
+#
+# Each one waits for the api's reset, which is what puts the todo list at the
+# baseline in services/api/src/core/fixtures/baseline.json before anything
+# reads it. `web` is already behind that reset (see
+# /rfcs/0004-deterministic-state.md), so naming it here as well would say
+# nothing more -- and so is the api's own
+# test run, which that reset already follows.
+#
+# `ui`'s test run is named because nothing else puts it ahead of these: it
+# declares no reset of its own (it owns no state to put back), and karma
+# driving a headless Chromium beside a browser driving the application is
+# two browsers competing for one node -- which is a slow outcome test, and
+# then a flaky one.
+register_outcome_runner(
+    base_url='http://web:8000',
+    resource_deps=[
+        reset_resource_name('example-api'),
+        tests_run_resource_name('example-ui'),
+    ],
+)

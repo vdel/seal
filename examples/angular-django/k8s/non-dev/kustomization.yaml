@@ -1,0 +1,49 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Layered on the dev overlay rather than restating it. The same api, the
+# same datastores, the same celery workers -- what this shape changes is how
+# the browser gets its static files, and how the api's environment is
+# assembled. A copy would have to be kept in step with dev by hand, and the
+# first thing to drift would be the parts this shape does not mean to
+# change.
+resources:
+- ../dev
+# The non-secret half of the api's environment, which this shape carries in
+# a ConfigMap of its own rather than in the Secret ../dev fills (see the
+# file itself). A resource, not a patch: nothing in ../dev declares it.
+- web/api/config.yaml
+
+# Patches rather than resources: the documents they change already arrive
+# from ../dev, and a resource re-declaring one is a duplicate id kustomize
+# refuses outright.
+patches:
+- path: web/nginx/patch-init-containers.yaml
+  target:
+    group: apps
+    version: v1
+    kind: Deployment
+    name: web
+- path: web/nginx/patch-nginx-config.yaml
+  target:
+    version: v1
+    kind: ConfigMap
+    name: nginx
+- path: web/api/patch-env-from.yaml
+  target:
+    group: apps
+    version: v1
+    kind: Deployment
+    name: web
+- path: celery/patch-beat-env-from.yaml
+  target:
+    group: apps
+    version: v1
+    kind: Deployment
+    name: celery-beat
+- path: celery/patch-worker-env-from.yaml
+  target:
+    group: apps
+    version: v1
+    kind: Deployment
+    name: celery-worker

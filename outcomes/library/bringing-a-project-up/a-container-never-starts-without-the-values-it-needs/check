@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""Translated from prompt.md, beside this file.
+
+The promise is a static accounting, over every overlay a project could
+deploy, between what a service's `.env` declares and what the objects in an
+overlay actually supply: a key nothing supplies, and an object supplying a
+key nothing declares, are each named before anything is built or deployed.
+Both halves are established here without a cluster (see
+python/src/seal/pod_environment.py and fill.py) -- one through
+`seal check`, the other through `seal ci`'s own pre-deploy fill
+step, which raises before it ever hands off to `tilt ci`.
+
+What the prompt's three "worth covering" bullets are read as, and where each
+is asserted:
+
+- **A key nothing supplies.** Two distinct shapes of this, both reported by
+  `seal check` alone: a key no overlay's objects claim *anywhere*
+  (reported once, as dead) and a key claimed in one overlay but not another
+  -- the differential the prompt's own prose calls out, and the one that
+  only shows up when somebody deploys the shape that lacks it. This reading
+  demonstrates the second by mutating a project already caught for the
+  first, so the two are told apart rather than merely both existing
+  somewhere in the fixture.
+- **The reverse mistake: an object supplying a key nothing declares.**
+  `seal check` itself does not surface this one (pod_environment.py
+  discards it, by design, since deciding whether an unclaimed key is a
+  problem depends on which overlay is asked and this walk answers for all
+  of them at once) -- it is `seal ci`/`up`'s own fill step
+  (stubs.claims()) that refuses it, before resolving a single value into a
+  Secret and long before anything is deployed. Read through `seal ci`
+  rather than `seal check` for that reason, and still asserted to be
+  a static, pre-deploy refusal: nothing about the message or the timing
+  here comes from Tilt or a cluster.
+- **A shape other than the usual one is checked as thoroughly.** The
+  differential case above *is* this: the default overlay stays clean
+  throughout, and the mistake only ever exists in the other one.
+
+Deliberately not asserted, because the prompt withholds it: that a
+*resolved* value is correct, or that a project must supply everything from
+one object -- the fixture splits nothing across objects only because one is
+enough to demonstrate both mistakes.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from helpers import Project, seal, check, expect, project  # noqa: E402
+from helpers.projects import container  # noqa: E402
+
+ENV = "GREETING=hello\nSECRET_ONLY_IN_DEV=world\n"
+
+
+def _stub(fill_from: str = "api", keys: str | None = None) -> dict:
+    annotations = {"seal-test.dev/fill-from": fill_from}
+    if keys is not None:
+        annotations["seal-test.dev/keys"] = keys
+    return {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {"name": "api-values", "annotations": annotations},
+        "type": "Opaque",
+    }
+
+
+def _container() -> dict:
+    return container("api", image="api") | {"envFrom": [{"secretRef": {"name": "api-values"}}]}
+
+
+def a_project_with_two_overlays(fixture: Project) -> None:
+    fixture.tiltfile().service("api", env=ENV)
+    fixture.manifest("dev", "api-values", _stub())
+    fixture.deployment("api", [_container()], overlay="dev")
+    fixture.manifest("prod-like", "api-values", _stub())
+    fixture.deployment("api", [_container()], overlay="prod-like")
+
+
+def body() -> None:
+    with project("accounting") as fixture:
+        a_project_with_two_overlays(fixture)
+
+        # A catch-all stub in each overlay claims whatever the .env
+        # declares, so both keys reach the container in both shapes: a
+        # baseline with nothing to report.
+        clean = seal("check", cwd=fixture.root)
+        expect(
+            clean.status == 0,
+            f"a project whose overlays account for every key is not refused:\n{clean}",
+        )
+        expect(
+            "every key a service declares has a source in every overlay" in clean.output,
+            f"and says so in as many words:\n{clean}",
+        )
+
+        # The prod-like overlay stops claiming SECRET_ONLY_IN_DEV -- still
+        # claimed in dev, so this is not yet a key nothing anywhere
+        # supplies. It is the shape the prompt calls out by name: supplied
+        # in one overlay, missing in the other, invisible unless the other
+        # one is checked too.
+        fixture.write(
+            "k8s/prod-like/api-values.yaml",
+            "apiVersion: v1\n"
+            "kind: Secret\n"
+            "metadata:\n"
+            "  name: api-values\n"
+            "  annotations:\n"
+            "    seal-test.dev/fill-from: api\n"
+            "    seal-test.dev/keys: GREETING\n"
+            "type: Opaque\n",
+        )
+        differential = seal("check", cwd=fixture.root)
+        expect(
+            differential.status != 0,
+            f"an overlay that stopped accounting for a key is refused:\n{differential}",
+        )
+        expect(
+            "overlay 'prod-like'" in differential.output
+            and "container 'api'" in differential.output
+            and "SECRET_ONLY_IN_DEV" in differential.output,
+            f"the refusal names the overlay, the container, and the key -- not "
+            f"just that something is wrong:\n{differential}",
+        )
+        expect(
+            "overlay 'dev'" not in differential.output,
+            f"the overlay that still accounts for it is not also named:\n{differential}",
+        )
+
+        # dev stops claiming it too: the same key, now unsourced everywhere,
+        # is a different mistake with a different message -- not a project
+        # that quietly deploys, only broken in one shape.
+        fixture.write(
+            "k8s/dev/api-values.yaml",
+            "apiVersion: v1\n"
+            "kind: Secret\n"
+            "metadata:\n"
+            "  name: api-values\n"
+            "  annotations:\n"
+            "    seal-test.dev/fill-from: api\n"
+            "    seal-test.dev/keys: GREETING\n"
+            "type: Opaque\n",
+        )
+        nowhere = seal("check", cwd=fixture.root)
+        expect(
+            nowhere.status != 0,
+            f"a key no overlay accounts for anywhere is refused:\n{nowhere}",
+        )
+        expect(
+            "api's .env declares 'SECRET_ONLY_IN_DEV', which no container in any "
+            "overlay has a source for" in nowhere.output,
+            f"and named as dead outright, not as a per-overlay difference:\n{nowhere}",
+        )
+        expect(
+            "overlay 'prod-like'" not in nowhere.output and "overlay 'dev'" not in nowhere.output,
+            f"reported once, not once per overlay that also lacks it:\n{nowhere}",
+        )
+
+    # The reverse mistake: an object claims a key the .env never declared.
+    # `seal check` does not decide this one (it depends on which
+    # overlay is asked, which the check does not choose) -- the run that
+    # actually fills objects does, and refuses before it resolves a single
+    # value or touches a cluster.
+    with project("overclaim") as fixture:
+        fixture.tiltfile().service("api", env="GREETING=hello\n")
+        fixture.manifest("dev", "api-values", _stub(keys="GREETING,BOGUS_KEY"))
+        fixture.deployment("api", [_container()], overlay="dev")
+
+        quiet = seal("check", cwd=fixture.root)
+        expect(
+            quiet.status == 0,
+            f"an overclaimed key does not fail the static accounting alone -- "
+            f"the fill step below is what refuses it:\n{quiet}",
+        )
+
+        refused = seal("ci", "--", "--k8s_overlay", "dev", "--build_type", "development",
+                              cwd=fixture.root)
+        expect(
+            refused.status != 0,
+            f"a stub claiming a key its service never declared is refused:\n{refused}",
+        )
+        expect(
+            "BOGUS_KEY" in refused.output and "api-values" in refused.output
+            and "does not declare" in refused.output,
+            f"the refusal names the object, the key, and the service that does not "
+            f"declare it:\n{refused}",
+        )
+        expect(
+            "Tiltfile" not in refused.output and "Cluster" not in refused.output,
+            f"and it comes before anything about Tilt or a cluster, not after a "
+            f"deploy attempt that then failed:\n{refused}",
+        )
+
+
+check(body)

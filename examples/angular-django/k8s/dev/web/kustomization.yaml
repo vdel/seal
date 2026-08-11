@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# We expose each service individually
+resources:
+- nginx
+# The object the api container reads its credentials from, filled by
+# seal from services/api/.env (see api/secrets.yaml itself).
+- api/secrets.yaml
+
+# We merge the deployments into one pod
+patches:
+ - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: web
+   path: api/deployment.yaml
+ - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: web
+   path: ui/deployment.yaml
