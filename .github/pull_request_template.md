@@ -18,7 +18,7 @@ looks like. -->
 ## Where the change lives
 
 <!-- Seal is a library: `tilt/` and `python/` are the deliverable, and
-`examples/angular-django/` only consumes them. The README's "Seal is a
+`examples/angular-django/` only consumes them. CLAUDE.md's "Seal is a
 library" section is the standard a change here is held to -- the test it
 applies is a project that doesn't live in this repo. Tick what applies. -->
 

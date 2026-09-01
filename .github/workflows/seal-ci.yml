@@ -161,7 +161,7 @@ on:
           checks out the *caller* repo, so that default only resolves when
           this repo's own python/ is actually present in that checkout at
           that relative position. A project in a different repo that vendors
-          this one as a git submodule instead (see the root README.md's
+          this one as a git submodule instead (see CLAUDE.md's
           "Adapting this for your own project") won't have that shape --
           override this to point at the submodule's own python/ instead,
           e.g. python_dir: seal/python for a submodule checked out at
