@@ -28,7 +28,7 @@
 
 set -euo pipefail
 
-seal_repo_url="${SEAL_REPO_URL:-https://github.com/vdel/autologate}"
+seal_repo_url="${SEAL_REPO_URL:-https://github.com/vdel/seal}"
 block_begin='<!-- seal:skills:begin -->'
 block_end='<!-- seal:skills:end -->'
 
@@ -104,7 +104,7 @@ claude_md_block() {
 $block_begin
 ## Seal
 
-This project builds on [Seal](https://github.com/vdel/autologate): one way to bring
+This project builds on [Seal](https://github.com/vdel/seal): one way to bring
 its services up, one way to resolve their credentials, and one way to run the
 tests a merge rests on -- the same way locally as in CI.
 

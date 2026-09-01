@@ -8,7 +8,7 @@
 # is on disk right now, uncommitted edits included. A project that instead
 # forked this template into its own, unrelated repo would point this at its
 # own fork's URL instead (or the published
-# https://github.com/vdel/autologate) -- see /tilt/README.md.
+# https://github.com/vdel/seal) -- see /tilt/README.md.
 v1alpha1.extension_repo(name='seal', url='file://' + os.path.join(config.main_dir, '..', '..'))
 v1alpha1.extension(name='seal', repo_name='seal', repo_path='tilt/seal')
 
