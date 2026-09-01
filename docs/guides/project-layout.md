@@ -10,7 +10,7 @@ own root `Tiltfile` is a real, checked-in file, and what it `include()`s is
 what the project deploys:
 
 ```python
-v1alpha1.extension_repo(name='seal', url='https://github.com/vdel/autologate')
+v1alpha1.extension_repo(name='seal', url='https://github.com/vdel/seal')
 v1alpha1.extension(name='seal', repo_name='seal', repo_path='tilt/seal')
 
 load('ext://seal', 'select_k8s_overlay', 'publish_images')

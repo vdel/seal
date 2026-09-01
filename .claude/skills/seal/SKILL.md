@@ -129,8 +129,8 @@ with fresh context, never the session that was in it).
 ## Reading further
 
 The user documentation is at
-<https://github.com/vdel/autologate/tree/main/docs> -- `installation.md`,
+<https://github.com/vdel/seal/tree/main/docs> -- `installation.md`,
 `quickstart.md` and `concepts.md` first, then one guide per subject. The
 reasoning behind each rule is in the RFCs at
-<https://github.com/vdel/autologate/tree/main/rfcs>, which is what to read
+<https://github.com/vdel/seal/tree/main/rfcs>, which is what to read
 before changing Seal itself.

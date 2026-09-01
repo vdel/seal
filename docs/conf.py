@@ -9,7 +9,7 @@ project = "Seal"
 author = "Seal contributors"
 copyright = "Seal contributors"
 
-REPO_URL = "https://github.com/vdel/autologate"
+REPO_URL = "https://github.com/vdel/seal"
 
 extensions = [
     "myst_parser",

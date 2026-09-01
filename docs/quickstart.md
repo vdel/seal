@@ -17,7 +17,7 @@ kubectl config current-context
 ## 1. Clone the worked example
 
 ```sh
-git clone https://github.com/vdel/autologate
+git clone https://github.com/vdel/seal
 cd seal/examples/angular-django
 ```
 

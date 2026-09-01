@@ -98,7 +98,7 @@ alias exists by the time anything reaches for it.
 ## Where a service's credentials come from
 
 Nothing in this extension turns a service's `.env` into a Kubernetes
-object any more, and no file here names one. **The overlay says which
+object, and no file here names one. **The overlay says which
 object carries which values**, by annotating it:
 
 ```yaml

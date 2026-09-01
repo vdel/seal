@@ -17,7 +17,7 @@ unknown way is worth reading before writing to.
 ## 1. The `seal` CLI
 
 ```sh
-uv tool install "git+https://github.com/vdel/autologate#subdirectory=python"
+uv tool install "git+https://github.com/vdel/seal#subdirectory=python"
 seal            # prints usage and exits non-zero: that is enough to say it is installed
 ```
 
@@ -25,13 +25,12 @@ seal            # prints usage and exits non-zero: that is enough to say it is i
 job, `uvx` runs it without installing:
 
 ```sh
-uvx --from "git+https://github.com/vdel/autologate#subdirectory=python" seal up
+uvx --from "git+https://github.com/vdel/seal#subdirectory=python" seal up
 uvx --from ../../python seal up          # from a checkout of Seal itself
 ```
 
-The distribution is published as `my-system-helpers` while the command it
-installs is `seal`; that name is what `uv tool uninstall` and
-`uv tool upgrade` want.
+`uv tool install` and `uv tool uninstall`/`upgrade` all key on the
+distribution name, `seal`.
 
 What Seal drives rather than what Seal is -- Docker, Tilt,
 kubectl, uv, `rsync`, and a provider's own CLI only if a `.env` actually
@@ -53,7 +52,7 @@ This is what makes Seal discoverable to the next agent that opens the
 repository, rather than only to this session:
 
 ```sh
-git clone --depth 1 https://github.com/vdel/autologate /tmp/seal
+git clone --depth 1 https://github.com/vdel/seal /tmp/seal
 /tmp/seal/bin/install-seal-skills --target .
 ```
 
@@ -74,7 +73,7 @@ The Starlark half is not installed. The project's own root `Tiltfile`
 registers this repository as a Tilt extension repo, once, near the top:
 
 ```python
-v1alpha1.extension_repo(name='seal', url='https://github.com/vdel/autologate')
+v1alpha1.extension_repo(name='seal', url='https://github.com/vdel/seal')
 v1alpha1.extension(name='seal', repo_name='seal', repo_path='tilt/seal')
 
 load('ext://seal', 'seal_service', 'select_k8s_overlay')
@@ -106,7 +105,7 @@ contents. Whichever route, the project root ends up with:
 A minimal root `Tiltfile`:
 
 ```python
-v1alpha1.extension_repo(name='seal', url='https://github.com/vdel/autologate')
+v1alpha1.extension_repo(name='seal', url='https://github.com/vdel/seal')
 v1alpha1.extension(name='seal', repo_name='seal', repo_path='tilt/seal')
 
 load('ext://seal', 'select_k8s_overlay', 'publish_images', 'register_outcome_runner')

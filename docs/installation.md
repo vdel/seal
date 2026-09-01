@@ -47,7 +47,7 @@ The repository is public, so `uv` can install the CLI straight from it. The
 package lives in the repository's `python/` subdirectory:
 
 ```sh
-uv tool install "git+https://github.com/vdel/autologate#subdirectory=python"
+uv tool install "git+https://github.com/vdel/seal#subdirectory=python"
 ```
 
 Check it worked:
@@ -59,19 +59,13 @@ seal
 With no arguments `seal` prints its usage and exits non-zero, which is
 enough to tell you it's installed.
 
-:::{note}
-The distribution is currently published under the name `my-system-helpers`
-while the command it installs is `seal`. That name is what
-`uv tool uninstall` and `uv tool upgrade` want.
-:::
-
 ### Without installing
 
 `uvx` runs the CLI from a temporary environment, which is worth reaching for
 in a one-off shell or a CI job that already has `uv`:
 
 ```sh
-uvx --from "git+https://github.com/vdel/autologate#subdirectory=python" seal up
+uvx --from "git+https://github.com/vdel/seal#subdirectory=python" seal up
 ```
 
 ### From a checkout
@@ -87,7 +81,7 @@ uvx --from ../../python seal up      # from examples/angular-django/
 Pinning a version works the way it does for any git dependency:
 
 ```sh
-uv tool install "git+https://github.com/vdel/autologate@v1.2.3#subdirectory=python"
+uv tool install "git+https://github.com/vdel/seal@v1.2.3#subdirectory=python"
 ```
 
 ## Registering the Tilt extension
@@ -98,7 +92,7 @@ repo](https://docs.tilt.dev/extensions.html) once, near the top, and Tilt
 fetches it:
 
 ```python
-v1alpha1.extension_repo(name='seal', url='https://github.com/vdel/autologate')
+v1alpha1.extension_repo(name='seal', url='https://github.com/vdel/seal')
 v1alpha1.extension(name='seal', repo_name='seal', repo_path='tilt/seal')
 
 load('ext://seal', 'seal_service', 'select_k8s_overlay')
@@ -133,7 +127,7 @@ reads to use it -- what replaces `tilt up`, what an outcome test is, what
 never to edit.
 
 ```sh
-git clone --depth 1 https://github.com/vdel/autologate /tmp/seal
+git clone --depth 1 https://github.com/vdel/seal /tmp/seal
 /tmp/seal/bin/install-seal-skills --target .
 ```
 
