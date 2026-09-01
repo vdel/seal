@@ -61,8 +61,8 @@ is currently executing** -- not the file where the calling function is
 `load()` do. So a helper several calls deep can read a bare relative path and
 correctly reach *that service's own* file -- `seal_service()`'s `reset`
 script, for one. This is what lets a service's own directory be the only
-thing that knows where it is. It is not stated in Tilt's own documentation
-and was confirmed empirically, which is why it is written down here.
+thing that knows where it is. It is not stated in Tilt's own documentation,
+which is why it is written down here.
 
 **The same information reaches Python by asking Tilt.** `seal
 up`/`seal ci` need each service's name and directory before Tilt

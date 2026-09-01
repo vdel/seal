@@ -38,7 +38,7 @@ it), then load whichever helpers you need -- see
 Kubernetes overlay:
 
 ```python
-v1alpha1.extension_repo(name='seal', url='https://github.com/vdel/autologate')
+v1alpha1.extension_repo(name='seal', url='https://github.com/vdel/seal')
 v1alpha1.extension(name='seal', repo_name='seal', repo_path='tilt/seal')
 
 load('ext://seal', 'k8s_overlay')

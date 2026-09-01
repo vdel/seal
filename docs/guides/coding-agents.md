@@ -43,7 +43,7 @@ the commands to verify each step with.
 ## Installing them
 
 ```sh
-git clone --depth 1 https://github.com/vdel/autologate /tmp/seal
+git clone --depth 1 https://github.com/vdel/seal /tmp/seal
 /tmp/seal/bin/install-seal-skills --target .
 ```
 
@@ -79,7 +79,7 @@ should change when you decide rather than when Seal does:
 a job on your own CI can say so:
 
 ```sh
-git clone --depth 1 https://github.com/vdel/autologate /tmp/seal
+git clone --depth 1 https://github.com/vdel/seal /tmp/seal
 /tmp/seal/bin/install-seal-skills --target . --check
 ```
 
@@ -116,7 +116,7 @@ the wrong thing hits a rule with a reason attached rather than a surprise.
 ## Working on the skills themselves
 
 They live in
-[`.claude/`](https://github.com/vdel/autologate/tree/main/.claude) in the
+[`.claude/`](https://github.com/vdel/seal/tree/main/.claude) in the
 Seal repository, alongside the `tilt/` and `python/` halves they
 describe, and that directory's own `README.md` covers the conventions
 they're written to. `--link` installs them into a project as symlinks back

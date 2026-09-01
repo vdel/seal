@@ -184,7 +184,7 @@ it. See `seal-merge-gate`.
 
 ## When none of these fit
 
-The RFCs at <https://github.com/vdel/autologate/tree/main/rfcs> cover the
+The RFCs at <https://github.com/vdel/seal/tree/main/rfcs> cover the
 reasoning behind each rule, which is often what is actually being
 asked when a rule seems surprising. Report what failed, what was run, and
 which directory under `tests-results/` holds the evidence -- rather than

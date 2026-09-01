@@ -39,8 +39,8 @@ deployed, `SEAL_BUILD_ID` to a zero-padded, monotonically increasing
 build identifier) -- local `tilt up` and this repo's own CI never do.
 
 This exists because Tilt always re-tags whatever it pushes under its own
-content-digest-derived tag -- confirmed against Tilt's own source
-(`internal/build/custom_builder.go`), even `custom_build()`'s own `tag`
+content-digest-derived tag, per Tilt's own source
+(`internal/build/custom_builder.go`) -- even `custom_build()`'s own `tag`
 argument only controls the *local* build target, not what actually reaches
 the registry. Nothing outside Tilt can discover or reason about that opaque
 tag, so it can't be what a release-tracking tool subscribes to for new
