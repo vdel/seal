@@ -92,11 +92,12 @@ on:
           which store a service's `.env` references resolve against). A job
           that calls a
           reusable workflow can't set `environment:` itself, which is why
-          this is threaded through as a plain input instead: the caller
-          resolves `secrets.X`/`vars.X` expressions below at repo/org scope,
-          not this Environment's scope -- see
-          .github/workflows/internal-example.yml for what that trade-off
-          means in practice.
+          this is threaded through as a plain input instead: every
+          `secrets.X`/`vars.X` expression the caller writes resolves at
+          repo/org scope, not this Environment's. What this job resolves for
+          itself does get this Environment's scope, which is what
+          `provider_token_secret` below exists to use -- see
+          .github/workflows/internal-example.yml for a worked caller.
         required: true
         type: string
       ref:
@@ -119,8 +120,9 @@ on:
         description: >
           Shell run before `seal ci`, putting every CLI this project's
           credential declarations name (seal-credentials-config.json) on
-          PATH and authenticating it. `secrets.provider_token` reaches it as
-          $SEAL_PROVIDER_TOKEN.
+          PATH and authenticating it. The credential reaches it as
+          $SEAL_PROVIDER_TOKEN -- from `provider_token_secret` below when
+          that names one, and from `secrets.provider_token` otherwise.
 
           Optional, and correct empty: a project whose `.env` files hold only
           literals and `k8s://` markers reaches no provider, needs no CLI,
@@ -131,6 +133,26 @@ on:
           a local action reference works for a caller inside this repository
           and breaks every caller outside it -- the same trap the job's own
           steps are arranged around.
+        required: false
+        type: string
+        default: ''
+      provider_token_secret:
+        description: >
+          Name of the secret carrying that credential, read here rather than
+          passed in -- which is what lets it be a secret on the Environment
+          `gh_environment` names, so each environment supplies its own.
+
+          A job that calls a reusable workflow cannot bind `environment:`,
+          so every `secrets.X` a caller writes resolves at repository scope:
+          one value for every environment, whichever this run targets. This
+          job *is* environment-bound, so a name it resolves itself gets that
+          Environment's own value. Reaching it needs `secrets: inherit` at
+          the call site -- a name resolves against what the caller passed,
+          and an explicit `secrets:` block passes only what it declares.
+
+          Optional, and the store's name is the project's to choose: left
+          empty, `secrets.provider_token` is used instead, which a caller
+          binding no Environment can pass directly.
         required: false
         type: string
         default: ''
@@ -233,6 +255,10 @@ on:
           One credential for `provider_setup` to authenticate with, reaching
           it as $SEAL_PROVIDER_TOKEN. What it opens, and which store, is the
           project's business -- this workflow never learns either.
+
+          Passed by the caller, and so resolved at repository scope: one
+          value across every environment. `provider_token_secret` above is
+          the per-environment alternative, and takes precedence when set.
 
           Scope it in the store to only what this GitHub Environment should
           be able to read: that, rather than anything here, is what stops a
@@ -513,7 +539,7 @@ jobs:
       if: inputs.provider_setup != ''
       working-directory: ${{ inputs.project_dir }}
       env:
-        SEAL_PROVIDER_TOKEN: ${{ secrets.provider_token }}
+        SEAL_PROVIDER_TOKEN: ${{ inputs.provider_token_secret != '' && secrets[inputs.provider_token_secret] || secrets.provider_token }}
       # What a project's declared providers need before `seal ci` can reach
       # them: a CLI on PATH, and a session. Both are the project's to
       # supply, because both are facts about a store this workflow has no

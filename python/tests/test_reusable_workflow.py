@@ -557,8 +557,14 @@ def test_the_setup_step_runs_what_the_caller_passed_before_seal_ci():
     assert "inputs.provider_setup" in step.get("if", "")
 
     # The token reaches it under seal's own name, so the caller's secret can
-    # be called whatever that store calls it.
-    assert step["env"]["SEAL_PROVIDER_TOKEN"] == "${{ secrets.provider_token }}"
+    # be called whatever that store calls it -- either by being passed under
+    # this workflow's name, or by naming itself through
+    # `provider_token_secret` (see the test below).
+    assert step["env"]["SEAL_PROVIDER_TOKEN"] == (
+        "${{ inputs.provider_token_secret != ''"
+        " && secrets[inputs.provider_token_secret]"
+        " || secrets.provider_token }}"
+    )
 
     # Before every `seal ci`: a CLI installed after the first resolution is
     # a CLI installed too late.
@@ -568,3 +574,31 @@ def test_the_setup_step_runs_what_the_caller_passed_before_seal_ci():
         if SEAL_CI in str(other.get("run", ""))
     )
     assert steps.index(step) < first_seal_ci
+
+def test_a_caller_can_name_the_secret_so_each_environment_supplies_its_own():
+    """A job that calls a reusable workflow cannot bind `environment:`, so
+    every `secrets.X` a caller writes resolves at repository scope -- one
+    value across every environment a project has. This job is
+    environment-bound, so a secret *it* resolves gets that Environment's own
+    value, and `provider_token_secret` is how a caller asks for that.
+
+    Optional and defaulting to empty, because naming a secret only works for
+    a caller passing `secrets: inherit`; one with an explicit `secrets:`
+    block passes `provider_token` directly and needs none of this."""
+    inputs = _workflow_call_inputs()
+
+    assert "provider_token_secret" in inputs
+    assert not inputs["provider_token_secret"].get("required", False)
+    assert inputs["provider_token_secret"].get("default", "") == ""
+
+    setup = [step for step in _steps() if "provider_setup" in str(step.get("run", ""))]
+    expression = setup[0]["env"]["SEAL_PROVIDER_TOKEN"]
+
+    # Resolved here rather than by the caller: that is the whole point, and
+    # an expression reading `secrets.provider_token_secret` instead would
+    # silently be the repository-scope behaviour again.
+    assert "secrets[inputs.provider_token_secret]" in expression
+    # A caller that names nothing keeps working, which is what lets one
+    # binding no Environment pass the credential straight in.
+    assert "secrets.provider_token" in expression
+
