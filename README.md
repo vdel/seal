@@ -6,7 +6,8 @@ A reusable base for developing and deploying multi-service applications with
 [Tilt](https://tilt.dev) + Kubernetes, plus a worked example so you can see
 it running end to end before adapting it. Full documentation -- the goals
 behind Seal, installation, a quickstart, and a deep dive per subject -- is
-in [`docs/`](docs/index.md), published with Read the Docs.
+at [seal-test.dev](https://seal-test.dev), published with Read the Docs from
+`docs/`.
 
 ## Install
 
@@ -14,9 +15,9 @@ in [`docs/`](docs/index.md), published with Read the Docs.
 uv tool install "git+https://github.com/vdel/seal#subdirectory=python"
 ```
 
-See [Installation](docs/installation.md) for prerequisites (Docker, Tilt,
-kubectl, a local Kubernetes cluster) and registering the Tilt extension in
-your own project's `Tiltfile`.
+See [Installation](https://seal-test.dev/installation.html) for
+prerequisites (Docker, Tilt, kubectl, a local Kubernetes cluster) and
+registering the Tilt extension in your own project's `Tiltfile`.
 
 ## Quick start
 
@@ -28,9 +29,9 @@ seal up
 
 That brings the worked example -- a Django API, an Angular UI and an nginx
 reverse proxy -- up against your local cluster. See
-[Quickstart](docs/quickstart.md) for the full walkthrough: running the
-outcome suite, running what a merge gate runs, and adapting this repo for
-your own project.
+[Quickstart](https://seal-test.dev/quickstart.html) for the full
+walkthrough: running the outcome suite, running what a merge gate runs, and
+adapting this repo for your own project.
 
 ## Repository layout
 
@@ -40,6 +41,7 @@ your own project.
   installs so a coding agent discovers and uses Seal correctly.
 - **`examples/angular-django/`** is the worked example and starting
   template.
-- **`docs/`** is the user documentation; **`rfcs/`** is the design record.
+- **`docs/`** is the source of the [user documentation](https://seal-test.dev);
+  **`rfcs/`** is the design record.
 
 See [`CLAUDE.md`](CLAUDE.md) for guidance on contributing to this repo.
