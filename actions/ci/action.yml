@@ -66,7 +66,8 @@ inputs:
   publish_images:
     description: >
       Whether to push the images this project builds, after every gate
-      above has passed. Its own job-ordering question rather than a flag
+      above has passed. Read as the string "true"; anything else, the
+      literal "false" included, publishes nothing. Its own job-ordering question rather than a flag
       on the runs: Tilt pushes when it deploys, not when a run succeeds,
       so publishing during a gate would publish before a single test had.
     required: true
@@ -525,11 +526,17 @@ runs:
         exit $status
 
     - name: Publish the images
-      # `success()` rather than a plain `if: inputs.publish_images`: this is
-      # what makes publishing depend on the gates instead of racing them.
-      # Tilt pushes when it deploys, so a --publish_images flag on a gate run
-      # would push before a single promise had been read.
-      if: success() && inputs.publish_images
+      # `success()` rather than the input alone: this is what makes
+      # publishing depend on the gates instead of racing them. Tilt pushes
+      # when it deploys, so a --publish_images flag on a gate run would push
+      # before a single promise had been read.
+      #
+      # Compared against the string, never read for truthiness. Every input
+      # an action receives is a string, and `if: inputs.publish_images` is
+      # therefore true for the literal "false" -- which runs this step for a
+      # caller that asked for no publishing at all, and it then fails on its
+      # own empty-overlay guard below.
+      if: success() && inputs.publish_images == 'true'
       working-directory: ${{ inputs.project_dir }}
       env:
         SEAL_CREDENTIALS_ENV: ${{ inputs.credentials_env }}

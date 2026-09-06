@@ -72,12 +72,12 @@ Check four things:
    `default_env`. It is independent of `--k8s_overlay`.
 2. `seal-credentials-config.json` maps that provider for that
    environment. `seal check` says so by name if it does not.
-3. Your provider's token is set on the **GitHub Environment** this job bound
-   to, not as a repository secret, and the caller passes it as the reusable
-   workflow's `provider_token`.
-4. Your caller workflow names that secret in its own `secrets:` block --
-   without the passthrough it silently arrives empty. See
-   [the three quirks](../guides/continuous-integration.md#three-github-actions-quirks).
+3. Your provider's token is set on the **GitHub Environment** the job
+   running the action binds, not as a repository secret.
+4. That job does bind it. `provider_token` is read in your own job, so a
+   job with no `environment:` resolves the secret at repository scope and it
+   silently arrives empty. See
+   [Why an action](../guides/continuous-integration.md#why-an-action-and-what-follows-from-it).
 
 There is deliberately no fallback here: this same `.env` is what production
 resolves too.

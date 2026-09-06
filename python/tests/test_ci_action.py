@@ -238,6 +238,26 @@ def test_publishing_waits_for_every_gate_to_have_passed():
     assert "inputs.publish_images" in publish_step["if"]
 
 
+def test_a_boolean_input_is_compared_and_never_read_for_truthiness():
+    """Every input an action receives is a string, so `if: inputs.x` is true
+    for the literal "false". A step gated that way runs for a caller that
+    asked for the opposite -- here, publishing runs for a caller that wanted
+    none, and then fails on its own missing-overlay guard, which reads as the
+    gate being broken rather than as the condition being wrong.
+
+    Held on the condition's shape rather than on one step: the trap is the
+    same for any input a future step gates on."""
+    for step in _steps():
+        condition = str(step.get("if", ""))
+        for reference in re.findall(r"inputs\.[A-Za-z_][A-Za-z0-9_]*", condition):
+            rest = condition[condition.index(reference) + len(reference):].lstrip()
+            assert rest.startswith(("==", "!=")), (
+                f"{step.get('name')!r} reads {reference} for truthiness in "
+                f"{condition!r}; compare it to a string instead -- \"false\" is "
+                f"truthy."
+            )
+
+
 def test_each_run_starts_from_a_cluster_with_nothing_on_it():
     """An object the next overlay does not declare keeps running otherwise,
     so a promise can be kept by a container the shape under test removed.
