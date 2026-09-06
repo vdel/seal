@@ -84,7 +84,7 @@ alike, with no second, hand-maintained copy of each key anywhere.
 
 `.github/workflows/internal-example.yml` (repo root) runs on every push/PR.
 It's a thin project-specific caller: it just points the repo's reusable
-`seal-ci.yml` workflow at this directory -- it doesn't enumerate this
+the `ci` action workflow at this directory -- it doesn't enumerate this
 project's credentials at all. That workflow runs each service's unit tests
 inside its own container (`seal ci -- --build_type test`), against a
 throwaway Kind cluster it creates and discards.

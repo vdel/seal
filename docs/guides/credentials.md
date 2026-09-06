@@ -308,7 +308,7 @@ ci` calls the same code `seal up` does. Only two pieces are
 CI-specific, and neither names your store:
 
 **Installing and authenticating the provider's CLI**, once per job, before
-`seal ci` runs. The reusable workflow takes a `provider_setup` script
+`seal ci` runs. The `ci` action takes a `provider_setup` script
 for this, and one `provider_token` secret that reaches it as
 `$SEAL_PROVIDER_TOKEN`. What that token opens, and which store, is
 your project's business:
@@ -337,7 +337,7 @@ protection rules -- required reviewers and the rest -- before that
 environment's token, and therefore its secrets, is reachable at all.
 
 **Setting `credentials_env`**, which selects the environment whose stores
-this run reads. Seal's reusable workflow leaves it at the project's
+this run reads. Seal's `ci` action leaves it at the project's
 own default, since nothing it runs reaches a real environment. A deploy
 pipeline sets it to that environment's own name. Which Kubernetes overlay
 gets deployed is a separate input, set independently.
@@ -348,7 +348,7 @@ resolution. The one thing it holds is infrastructure-level rather than app
 config: the provider token above.
 :::
 
-Because the reusable workflow resolves each service's own `.env` directly,
+Because the `ci` action resolves each service's own `.env` directly,
 it never needs to know your application's variable names -- so your CI file
 never enumerates them. See
 [Continuous integration](continuous-integration.md).

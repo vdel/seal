@@ -100,7 +100,7 @@ contents. Whichever route, the project root ends up with:
 | `seal-credentials-config.json` | Only if a `.env` references a store: the providers the project declares, their environments, and its own `default_env`. | `seal-add-service` |
 | `outcomes/` | The promises, the tests translated from them, and `seal-test-config.json`. | `seal-outcome` |
 | `CODEOWNERS` | A rule covering the whole outcome tree. | `seal-merge-gate` |
-| `.github/workflows/<project>.yml` | Boilerplate pointing the reusable workflow at this project. | `seal-merge-gate` |
+| `.github/workflows/<project>.yml` | Boilerplate using the `ci` action against this project. | `seal-merge-gate` |
 
 A minimal root `Tiltfile`:
 

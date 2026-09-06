@@ -1,347 +1,232 @@
-name: Seal CI (reusable)
+name: Seal CI
+description: >
+  Build a Seal project on a throwaway Kind cluster, run each service's own
+  tests and the project's outcome suite, and report what every run found.
 
-# Generic build + unit-test pipeline, built around Tilt + Kubernetes (Kind).
-# Shared by every project in this repo (and, potentially, other repos that
-# pull in the `seal` package): a project supplies only where its Tiltfile
-# lives (`inputs.project_dir`) -- this file never needs to know an app's
-# variable/secret names, nor which password manager it keeps them in: `seal
-# ci` resolves each service's own `.env` through the providers that project
-# declares (see /rfcs/0006-credential-resolution.md at the repo root), the same
-# way `seal up` does for local dev. What puts those providers' CLIs on PATH
-# and authenticates them is `inputs.provider_setup`, which the caller
-# supplies. See
-# `.github/workflows/internal-example.yml` for a worked caller.
+# The generic build -> test pipeline: check out, install Tilt/ctlptl/uv, spin
+# up a throwaway Kind cluster, run `seal ci` -- which runs each service's own
+# tests inside its running container -- run the project's outcome suite
+# against the environment that just came up, and hand back what every run
+# found. So a green run means two things: the environment came up, and every
+# promise the project has translated still holds.
 #
-# Each service's tests run inside its own container, against a throwaway Kind
-# cluster this job creates and discards. `on: workflow_call` with no trigger
-# of its own is what makes it reusable for development outside this repo: a
-# project in any repo calls it with its own `project_dir` (and `python_dir`,
-# see below) and gets the same pipeline.
+# What makes that a usable merge gate is `seal ci` exiting successfully only
+# once *every* resource is ready -- so it refuses to start at all until each
+# Deployment declares a `readinessProbe`, without which Kubernetes reports a
+# container Ready the instant its process starts. It never touches a real
+# cluster.
 #
-# A project names which of its Kubernetes overlays the gate deploys, and may
-# name further ones to verify its promises against -- the shape that ships as
-# well as the shape it is developed in. Every one of those runs happens on
-# the same throwaway cluster this job creates; deploying to a real one is
-# specific to whoever is deploying, and out of scope here.
+# An action rather than a reusable workflow, and that decides two things
+# below.
 #
-# What a run found is handed back rather than published here. This workflow
-# reads the JUnit reports its runs left behind and hands the caller both the
-# reading (the `results` output) and the reports themselves (an artifact,
-# named by the `results_artifact` output). How a project's results are
-# presented -- a check, a pull-request comment, a summary, nothing at all --
-# is a policy, and a policy pinned in here is one every adopting project
-# inherits along with whichever third-party action implements it, the write
-# scopes it needs on their pull requests, and the kind of runner it happens
-# to require.
+# The `seal` CLI lives in this repository, in `python/`. An action gets its
+# own repository checked out and $GITHUB_ACTION_PATH pointing into it, so the
+# CLI is simply there -- at the same revision as this file, needing no
+# credential and unable to drift from it. A reusable workflow gets only its
+# `.yml`, leaving the CLI to be named by the caller and resolved separately:
+# either vendored as a git submodule or fetched by git reference, and pinned
+# by hand at a revision that has to match.
 #
-# The runs are steps of one job rather than jobs of their own, and the setup
-# below is why: `uses: ./...` inside a reusable workflow resolves against the
-# *caller's* checkout, not this repository's, so a composite action holding
-# these steps would work for a caller inside this repo and break every
-# caller outside it -- a difference no test here could catch.
+# It also runs inside the caller's job, so that job binds `environment:` and
+# every secret resolves there, against the right Environment, arriving here
+# as an ordinary input. A reusable workflow cannot be called from a job that
+# binds an Environment, which forces the callee to bind it -- and a
+# per-environment credential can then only be reached by passing its NAME for
+# the callee to look up.
+#
+# One pin is left, and it is the one this cannot close: a project's own root
+# Tiltfile registers the Starlark half with `v1alpha1.extension_repo(ref=...)`.
+# The Starlark and the Python are one library, so that ref and the ref this
+# action is used at have to name the same revision.
+#
+# Publishing an image to a real registry, deploying an overlay that names a
+# real environment, and sealing credentials for one are a deployment
+# toolkit's job, not this one's.
 
-on:
-  workflow_call:
-    inputs:
-      project_dir:
-        description: "Path (relative to the repo root) to the project's root Tiltfile/services."
-        required: true
-        type: string
-      k8s_overlay:
-        description: >
-          Which of the project's Kubernetes overlays the gate runs against.
-          This is the shape whose run also executes each service's own tests,
-          so it should be the one a developer brings up locally: a gate on a
-          shape nobody can reproduce is one nobody can act on.
-        required: true
-        type: string
-      additional_k8s_overlays:
-        description: >
-          Further overlays to verify the promises against, as a JSON list of
-          strings -- e.g. '["prod-like"]'. Each runs the outcome suite alone,
-          against the images a real environment runs. Empty by default: how
-          much a second shape adds depends on what that overlay changes, so
-          whether to have one is the project's call.
-        required: false
-        type: string
-        default: '[]'
-      publish_images:
-        description: >
-          Whether to push the images this project builds, after every gate
-          above has passed. Its own job-ordering question rather than a flag
-          on the runs: Tilt pushes when it deploys, not when a run succeeds,
-          so publishing during a gate would publish before a single test had.
-        required: true
-        type: boolean
-      publish_k8s_overlay:
-        description: >
-          Which overlay the publishing run deploys. Publishing means
-          deploying something and letting Tilt push what it built, so it
-          still names a shape -- and the one it names should be the one the
-          deployment will use. Required in practice whenever publish_images
-          is true; the run fails saying so rather than silently deploying
-          whatever the project defaults to.
-        required: false
-        type: string
-        default: ''
-      gh_environment:
-        description: >
-          Name of the GitHub Environment this job should bind to (protection
-          rules, and scoping for anything this workflow reads directly from
-          `vars`/`secrets` itself -- not `credentials_env` below, which picks
-          which store a service's `.env` references resolve against). A job
-          that calls a
-          reusable workflow can't set `environment:` itself, which is why
-          this is threaded through as a plain input instead: every
-          `secrets.X`/`vars.X` expression the caller writes resolves at
-          repo/org scope, not this Environment's. What this job resolves for
-          itself does get this Environment's scope, which is what
-          `provider_token_secret` below exists to use -- see
-          .github/workflows/internal-example.yml for a worked caller.
-        required: true
-        type: string
-      ref:
-        description: "Branch name or SHA to check out. Defaults to the triggering ref."
-        required: false
-        type: string
-        default: ''
-      runs_on:
-        description: >
-          Runner label this job runs on. Defaults to GitHub's own hosted
-          'ubuntu-latest'. Everything this job needs beyond a Linux/amd64
-          machine and a reachable Docker daemon (uv, Tilt, ctlptl, kubectl,
-          kind, rsync) is installed by the job itself, so a self-hosted label works
-          here too -- e.g. an Actions Runner Controller scale set running
-          `containerMode: dind`, which gives each job its own nested daemon.
-        required: false
-        type: string
-        default: 'ubuntu-latest'
-      provider_setup:
-        description: >
-          Shell run before `seal ci`, putting every CLI this project's
-          credential declarations name (seal-credentials-config.json) on
-          PATH and authenticating it. The credential reaches it as
-          $SEAL_PROVIDER_TOKEN -- from `provider_token_secret` below when
-          that names one, and from `secrets.provider_token` otherwise.
+inputs:
+  project_dir:
+    description: "Path (relative to the repo root) to the project's root Tiltfile/services."
+    required: true
+  k8s_overlay:
+    description: >
+      Which of the project's Kubernetes overlays the gate runs against.
+      This is the shape whose run also executes each service's own tests,
+      so it should be the one a developer brings up locally: a gate on a
+      shape nobody can reproduce is one nobody can act on.
+    required: true
+  additional_k8s_overlays:
+    description: >
+      Further overlays to verify the promises against, as a JSON list of
+      strings -- e.g. '["prod-like"]'. Each runs the outcome suite alone,
+      against the images a real environment runs. Empty by default: how
+      much a second shape adds depends on what that overlay changes, so
+      whether to have one is the project's call.
+    required: false
+    default: '[]'
+  publish_images:
+    description: >
+      Whether to push the images this project builds, after every gate
+      above has passed. Its own job-ordering question rather than a flag
+      on the runs: Tilt pushes when it deploys, not when a run succeeds,
+      so publishing during a gate would publish before a single test had.
+    required: true
+  publish_k8s_overlay:
+    description: >
+      Which overlay the publishing run deploys. Publishing means
+      deploying something and letting Tilt push what it built, so it
+      still names a shape -- and the one it names should be the one the
+      deployment will use. Required in practice whenever publish_images
+      is true; the run fails saying so rather than silently deploying
+      whatever the project defaults to.
+    required: false
+    default: ''
+  ref:
+    description: "Branch name or SHA to check out. Defaults to the triggering ref."
+    required: false
+    default: ''
+  provider_setup:
+    description: >
+      Shell run before `seal ci`, putting every CLI this project's
+      credential declarations name (seal-credentials-config.json) on
+      PATH and authenticating it. The credential reaches it as
+      $SEAL_PROVIDER_TOKEN, from `provider_token` below.
 
-          Optional, and correct empty: a project whose `.env` files hold only
-          literals and `k8s://` markers reaches no provider, needs no CLI,
-          and should not have to say so.
+      Optional, and correct empty: a project whose `.env` files hold only
+      literals and `k8s://` markers reaches no provider, needs no CLI,
+      and should not have to say so.
 
-          Shell rather than an action to `uses:`, deliberately. A reusable
-          workflow resolves `uses: ./...` against the *caller's* checkout, so
-          a local action reference works for a caller inside this repository
-          and breaks every caller outside it -- the same trap the job's own
-          steps are arranged around.
-        required: false
-        type: string
-        default: ''
-      provider_token_secret:
-        description: >
-          Name of the secret carrying that credential, read here rather than
-          passed in -- which is what lets it be a secret on the Environment
-          `gh_environment` names, so each environment supplies its own.
+      Shell rather than an action to `uses:`, deliberately. A reusable
+      workflow resolves `uses: ./...` against the *caller's* checkout, so
+      a local action reference works for a caller inside this repository
+      and breaks every caller outside it -- the same trap the job's own
+      steps are arranged around.
+    required: false
+    default: ''
+  credentials_env:
+    description: >
+      Which of the project's credentials environments this run reads --
+      which store each `.env` reference resolves against, per that
+      project's own seal-credentials-config.json. Reaches `seal ci` as
+      SEAL_CREDENTIALS_ENV.
 
-          A job that calls a reusable workflow cannot bind `environment:`,
-          so every `secrets.X` a caller writes resolves at repository scope:
-          one value for every environment, whichever this run targets. This
-          job *is* environment-bound, so a name it resolves itself gets that
-          Environment's own value. Reaching it needs `secrets: inherit` at
-          the call site -- a name resolves against what the caller passed,
-          and an explicit `secrets:` block passes only what it declares.
+      Optional: left empty, the project's own `default_env` applies. seal
+      has no default of its own, so a project that declares neither and
+      references a provider fails saying which three things could name
+      one. Deliberately independent of k8s_overlay -- verifying a
+      production-shaped overlay on a throwaway cluster is exactly what
+      that input exists for, and deriving credentials from it would make
+      such a run reach real secrets.
+    required: false
+    default: ''
+  results_artifact:
+    description: >
+      Name of the artifact this run uploads its results to -- every JUnit
+      report and whatever else each run left in tests-results/, filed
+      under the overlay that produced it. Also reported as an output, so
+      a caller downloading it names it once.
 
-          Optional, and the store's name is the project's to choose: left
-          empty, `secrets.provider_token` is used instead, which a caller
-          binding no Environment can pass directly.
-        required: false
-        type: string
-        default: ''
-      credentials_env:
-        description: >
-          Which of the project's credentials environments this run reads --
-          which store each `.env` reference resolves against, per that
-          project's own seal-credentials-config.json. Reaches `seal ci` as
-          SEAL_CREDENTIALS_ENV.
+      An artifact name has to be unique within a workflow run, so a
+      caller that calls this workflow more than once (several projects in
+      one repository, say) gives each call its own name.
+    required: false
+    default: 'tests-results'
+  results_retention_days:
+    description: >
+      How long the results artifact is kept. It exists to be consumed by
+      the caller's own reporting, in the same run, so the default is
+      short: what a reader comes back to weeks later is the report the
+      caller published from it, not this. Raise it if opening a failed
+      run's raw XML later is worth the storage.
+    required: false
+    default: 7
+  provider_token:
+    description: >
+      One credential for `provider_setup` to authenticate with, reaching it
+      as $SEAL_PROVIDER_TOKEN. Which store it opens, and which scope of it,
+      is the project's business -- nothing here learns either.
 
-          Optional: left empty, the project's own `default_env` applies. seal
-          has no default of its own, so a project that declares neither and
-          references a provider fails saying which three things could name
-          one. Deliberately independent of k8s_overlay -- verifying a
-          production-shaped overlay on a throwaway cluster is exactly what
-          that input exists for, and deriving credentials from it would make
-          such a run reach real secrets.
-        required: false
-        type: string
-        default: ''
-      python_dir:
-        description: >
-          Path, relative to project_dir, to this repo's own checked-out
-          python/ package (the `seal` CLI -- see /python/README.md). Default
-          '../../python' is correct when project_dir lives inside a checkout
-          of this repo itself, two directories deep (e.g.
-          examples/angular-django here) -- a reusable-workflow call only
-          checks out the *caller* repo, so that default only resolves when
-          this repo's own python/ is actually present in that checkout at
-          that relative position. A project in a different repo that vendors
-          this one as a git submodule instead (see CLAUDE.md's
-          "Adapting this for your own project") won't have that shape --
-          override this to point at the submodule's own python/ instead,
-          e.g. python_dir: seal/python for a submodule checked out at
-          <project_dir>/seal.
-        required: false
-        type: string
-        default: '../../python'
-      results_artifact:
-        description: >
-          Name of the artifact this run uploads its results to -- every JUnit
-          report and whatever else each run left in tests-results/, filed
-          under the overlay that produced it. Also reported as an output, so
-          a caller downloading it names it once.
+      The calling job binds `environment:` and reads its own name for this,
+      so a run against one environment resolves that environment's store and
+      no other. Optional: a project whose `.env` files hold only literals
+      reaches no provider, and one authenticating another way -- a cloud
+      workload identity, say -- does whatever it needs in `provider_setup`.
+    required: false
+    default: ''
+  submodules_token:
+    description: >
+      Read access to whatever the checkout below needs beyond the calling
+      repository itself -- a private git submodule the project vendors.
+      GITHUB_TOKEN is scoped to the repository whose workflow is running and
+      can read no other, so without this such a submodule fails to clone
+      before any later step runs.
 
-          An artifact name has to be unique within a workflow run, so a
-          caller that calls this workflow more than once (several projects in
-          one repository, say) gives each call its own name.
-        required: false
-        type: string
-        default: 'tests-results'
-      results_retention_days:
-        description: >
-          How long the results artifact is kept. It exists to be consumed by
-          the caller's own reporting, in the same run, so the default is
-          short: what a reader comes back to weeks later is the report the
-          caller published from it, not this. Raise it if opening a failed
-          run's raw XML later is worth the storage.
-        required: false
-        type: number
-        default: 7
-    outputs:
-      overlays:
-        description: >
-          The overlays this run verified, as a JSON list -- the keys of
-          `results`, and what a caller reporting per shape matrixes over.
-          Empty when the run died before it could say which shapes it was
-          going to run, which is the one case a caller has to guard: a
-          fromJSON('') fails the job reading it, on top of the one that
-          already failed.
-        value: ${{ jobs.tests.outputs.overlays }}
-      results:
-        description: >
-          What every run found, as one line of JSON keyed by overlay:
-          `{"<overlay>": {"passed": bool, "cases": int, "skipped": int,
-          "failed": int, "problems": [...], "sources": [{"name": ..., "passed":
-          ..., "cases": ..., "skipped": ..., "failed": [names], "failed_omitted":
-          int, "problems": [...]}]}}`. One source per directory a run's
-          results came back in -- each service under its own name, the
-          outcome suite under `outcomes`.
+      Nothing about Seal itself needs it: the CLI is this action's own
+      repository, checked out beside it.
+    required: false
+    default: ''
 
-          Read by `seal _tests-results`, which is the same junit.py the
-          gate's own per-service verdict comes from, so this cannot say one
-          thing where the run said another. The failed *names* are capped per
-          source (a job output is a string with a size limit); the failed
-          *count* never is.
-        value: ${{ jobs.tests.outputs.results }}
-      results_artifact:
-        description: >
-          Name of the artifact holding the reports themselves, laid out as
-          '<overlay>/<service>/junit.xml' -- what a caller downloads to feed
-          a reporting action that wants the XML, or the coverage this output
-          does not carry. Nothing is uploaded when a run failed before
-          producing any results, so a caller's download step guards against
-          the artifact not being there.
-        value: ${{ jobs.tests.outputs.results_artifact }}
-    secrets:
-      provider_token:
-        description: >
-          One credential for `provider_setup` to authenticate with, reaching
-          it as $SEAL_PROVIDER_TOKEN. What it opens, and which store, is the
-          project's business -- this workflow never learns either.
+outputs:
+  overlays:
+    description: "Every overlay this run verified, as a JSON array -- what a caller fans a per-overlay job out over."
+    value: ${{ steps.plan.outputs.overlays }}
+  results:
+    description: "What every run found, for a caller to report however it presents results."
+    value: ${{ steps.collect.outputs.results }}
+  results_artifact:
+    description: "The name this run uploaded its results under, so a caller downloading it names it once."
+    value: ${{ inputs.results_artifact }}
 
-          Passed by the caller, and so resolved at repository scope: one
-          value across every environment. `provider_token_secret` above is
-          the per-environment alternative, and takes precedence when set.
-
-          Scope it in the store to only what this GitHub Environment should
-          be able to read: that, rather than anything here, is what stops a
-          gate reaching production secrets.
-
-          Optional. A project authenticating some other way -- a cloud
-          workload identity, say -- needs no secret at all and can leave this
-          unset, doing whatever it needs in `provider_setup`.
-        required: false
-      source_repo_token:
-        description: >
-          A token with read access to whatever the checkout below needs
-          beyond the calling repository itself -- in practice, a git
-          submodule vendoring this one (see the `python_dir` input).
-
-          GITHUB_TOKEN is scoped to the repository whose workflow is
-          running and can read no other, so a private submodule's clone
-          fails with a bare "Repository not found" before any step of this
-          job runs. Nothing later in the job can recover from that: the
-          Tilt extensions and the CLI both resolve out of that checkout.
-
-          Optional, and unset for a project whose checkout is
-          self-contained or whose submodules are public -- the checkout
-          falls back to GITHUB_TOKEN, which is what it would have used
-          anyway.
-        required: false
-
-jobs:
-  tests:
-    runs-on: ${{ inputs.runs_on }}
-    environment: ${{ inputs.gh_environment }}
-    permissions:
-      contents: read
-
-    outputs:
-      # What the caller gets back: which shapes were verified, what their
-      # runs found, and where the reports themselves are. See the
-      # workflow_call outputs above for the shape of each.
-      overlays: ${{ steps.plan.outputs.overlays }}
-      results: ${{ steps.collect.outputs.results }}
-      results_artifact: ${{ inputs.results_artifact }}
-
-    env:
+runs:
+  using: composite
+  steps:
+    - name: Make an in-cluster config undetectable
       # Blank, not unset-by-omission: a job running on an in-cluster runner
-      # (see the runs_on input) is itself a pod, and client-go treats that as
-      # a Kubernetes client. Its namespace resolution takes the kubeconfig's
-      # context namespace, and when that is empty or "default" -- which is
-      # exactly what `kind` writes -- falls back to the *pod's own* namespace
-      # from its mounted service account. Tilt then deploys into whatever
-      # namespace the runner happens to live in on the host cluster, which
-      # does not exist in the kind cluster it just created:
+      # is itself a pod, and client-go treats that as a Kubernetes client.
+      # Its namespace resolution takes the kubeconfig's context namespace,
+      # and when that is empty or "default" -- which is exactly what `kind`
+      # writes -- falls back to the *pod's own* namespace from its mounted
+      # service account. Tilt then deploys into whatever namespace the runner
+      # happens to live in on the host cluster, which does not exist in the
+      # kind cluster it just created:
       #   kubernetes apply retry: namespaces "actions-runner-system" not found
       # Clearing these makes an in-cluster config impossible to detect, so
       # every k8s client in this job resolves against the kubeconfig alone.
       # No-op on a hosted runner, where they are unset to begin with.
-      KUBERNETES_SERVICE_HOST: ""
-      KUBERNETES_SERVICE_PORT: ""
+      #
+      # Written to $GITHUB_ENV rather than declared once for the job: an
+      # action has no job-level `env:`, and $GITHUB_ENV is what carries a
+      # value into every step after this one.
+      shell: bash
+      run: |
+        {
+          echo "KUBERNETES_SERVICE_HOST="
+          echo "KUBERNETES_SERVICE_PORT="
+        } >> "$GITHUB_ENV"
 
-    steps:
     - name: Checkout code
       uses: actions/checkout@v6
       with:
         ref: ${{ inputs.ref || github.ref }}
-        # This repo has none, so this is a no-op for that case -- but a
-        # caller that vendors seal as a git submodule (see python_dir
-        # above) needs its contents actually checked out, not left as an
-        # empty directory (actions/checkout's own default).
+        # A project vendoring something of its own as a submodule needs its
+        # contents actually checked out, not left as an empty directory
+        # (actions/checkout's own default). Nothing about Seal is vendored:
+        # the CLI is this action's own repository.
         submodules: true
         # What a *private* submodule's clone authenticates as. The default
         # GITHUB_TOKEN can read only the repository whose workflow is
-        # running, so without this a caller vendoring this repo privately
-        # fails here, before any step of the job runs. See the
-        # `source_repo_token` secret.
-        token: ${{ secrets.source_repo_token || github.token }}
+        # running, so without this a caller vendoring one privately fails
+        # here, before any later step runs. See the `submodules_token` input.
+        token: ${{ inputs.submodules_token || github.token }}
 
     - name: Prepare a writable tool directory
       # Every tool installed below lands here rather than in /usr/local/bin,
       # and $GITHUB_PATH puts it on PATH for every later step. /usr/local/bin
-      # needs sudo, which is a property of whichever image runs this job (see
-      # the runs_on input) rather than something this workflow can assume; a
+      # needs sudo, which is a property of whichever image the calling job
+      # runs on rather than something this action can assume; a
       # directory under $HOME always works. tilt-dev's own install.sh picks
       # this exact directory once it's on PATH, so Tilt lands here too
       # without needing to be told.
+      shell: bash
       run: |
         mkdir -p "$HOME/.local/bin"
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -352,6 +237,7 @@ jobs:
       # in-cluster runner gets one from a sidecar container that boots
       # alongside the runner itself, so the socket can still be missing for
       # the first seconds of a job.
+      shell: bash
       run: |
         for _ in $(seq 60); do
           if docker info >/dev/null 2>&1; then
@@ -385,6 +271,7 @@ jobs:
       env:
         PRIMARY_K8S_OVERLAY: ${{ inputs.k8s_overlay }}
         ADDITIONAL_K8S_OVERLAYS: ${{ inputs.additional_k8s_overlays }}
+      shell: bash
       run: |
         uv run --no-project python - <<'PY' >> "$GITHUB_OUTPUT"
         import json, os, sys
@@ -419,10 +306,12 @@ jobs:
       # fails with "tar: tilt: Cannot open: File exists" (a non-empty
       # directory can't be replaced by a same-named file).
       working-directory: ${{ runner.temp }}
+      shell: bash
       run: |
         curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
 
     - name: Install ctlptl
+      shell: bash
       run: |
         curl -fsSL https://github.com/tilt-dev/ctlptl/releases/download/v0.9.3/ctlptl.0.9.3.linux.x86_64.tar.gz | tar -xzv -C "$HOME/.local/bin" ctlptl
 
@@ -430,8 +319,8 @@ jobs:
       # ctlptl drives the `kind` binary directly to create the cluster below,
       # and `seal ci` shells out to kubectl (python/src/seal/seal.py). Both
       # ship with GitHub's hosted runner image, so this is a no-op there; a
-      # stock self-hosted runner image (see the runs_on input) carries
-      # neither.
+      # stock self-hosted runner image carries neither.
+      shell: bash
       run: |
         if ! command -v kubectl >/dev/null 2>&1; then
           curl -fsSL -o "$HOME/.local/bin/kubectl" \
@@ -452,14 +341,15 @@ jobs:
       # tilt/seal/tests.Tiltfile), and it shells out to a local rsync -- its
       # own verify_rsync.sh refuses to load the extension without one, which
       # fails the Tiltfile at parse time, before any test runs. GitHub's
-      # hosted image ships rsync; a stock self-hosted runner image (see the
-      # runs_on input) does not.
+      # hosted image ships rsync; a stock self-hosted runner image does
+      # not.
       #
       # Installed out of a container rather than with a package manager,
       # because `apt-get install` needs root and this job assumes no sudo
       # (see "Prepare a writable tool directory" above). The binary is
       # invoked through its own image's dynamic loader and libraries, so it
       # doesn't have to match whatever libc the runner image carries.
+      shell: bash
       run: |
         if command -v rsync >/dev/null 2>&1; then
           rsync --version | head -1
@@ -505,6 +395,7 @@ jobs:
       # A file rather than a shell function: each step below is its own
       # shell, so a function would have to be repeated in each of them, and
       # with it this reasoning.
+      shell: bash
       run: |
         cat > "$RUNNER_TEMP/fresh-cluster.sh" <<'EOF'
         #!/bin/sh
@@ -532,14 +423,14 @@ jobs:
       # way docker/build-push-action does; this exports them into
       # $GITHUB_ENV so buildx's --cache-from/--cache-to type=gha can
       # authenticate. Scoped to this run's own repository, i.e. whichever
-      # project called this reusable workflow.
+      # project used this action.
       uses: crazy-max/ghaction-github-runtime@v4
 
     - name: Set up credential providers
       if: inputs.provider_setup != ''
       working-directory: ${{ inputs.project_dir }}
       env:
-        SEAL_PROVIDER_TOKEN: ${{ inputs.provider_token_secret != '' && secrets[inputs.provider_token_secret] || secrets.provider_token }}
+        SEAL_PROVIDER_TOKEN: ${{ inputs.provider_token }}
       # What a project's declared providers need before `seal ci` can reach
       # them: a CLI on PATH, and a session. Both are the project's to
       # supply, because both are facts about a store this workflow has no
@@ -549,6 +440,7 @@ jobs:
       # which is what a CLI keeping its session in an environment variable
       # needs -- `seal ci` shells out to it, so a session confined to this
       # step would be gone by the time it is used.
+      shell: bash
       run: ${{ inputs.provider_setup }}
 
     # Each run below is one `seal ci` a developer or an agent can type
@@ -574,13 +466,14 @@ jobs:
         # Tilt's plain docker_build(). Local `tilt up` never sets this.
         SEAL_BUILDX_CACHE: "1"
         K8S_OVERLAY: ${{ inputs.k8s_overlay }}
+      shell: bash
       run: |
         # `seal ci` runs `tilt ci` against this project's own, checked-in
         # root Tiltfile (see /rfcs/0002-declaration-by-structure.md at the repo root),
         # building each service's own test stage and running its suite
-        # inside the container, then reading the promises. See the
-        # python_dir input's own description above for what it resolves to
-        # and when to override it.
+        # inside the container, then reading the promises. The CLI is this
+        # action's own repository, checked out beside it -- so it is the
+        # same revision as this file, and needs no credential to fetch.
         #
         # This is the one run at --build_type test, so it is the only one
         # that executes a service's own tests -- which is also what makes
@@ -588,7 +481,7 @@ jobs:
         # they connect to and the Secret their .env resolved into.
         "$RUNNER_TEMP/fresh-cluster.sh"
         status=0
-        uvx --from ${{ inputs.python_dir }} seal ci -- \
+        uvx --from ${{ github.action_path }}/../../python seal ci -- \
           --k8s_overlay "$K8S_OVERLAY" --build_type test || status=$?
         mkdir -p "$RUNNER_TEMP/seal-results"
         if [ -d tests-results ]; then
@@ -605,6 +498,7 @@ jobs:
       env:
         SEAL_CREDENTIALS_ENV: ${{ inputs.credentials_env }}
         SEAL_BUILDX_CACHE: "1"
+      shell: bash
       run: |
         # --build_type runtime: the images a real environment runs. They
         # carry the service and not its suite, so these runs verify the
@@ -620,7 +514,7 @@ jobs:
           [ -n "$overlay" ] || continue
           echo "::group::$overlay"
           "$RUNNER_TEMP/fresh-cluster.sh"
-          uvx --from ${{ inputs.python_dir }} seal ci -- \
+          uvx --from ${{ github.action_path }}/../../python seal ci -- \
             --k8s_overlay "$overlay" --build_type runtime || status=$?
           mkdir -p "$RUNNER_TEMP/seal-results"
           if [ -d tests-results ]; then
@@ -641,6 +535,7 @@ jobs:
         SEAL_CREDENTIALS_ENV: ${{ inputs.credentials_env }}
         SEAL_BUILDX_CACHE: "1"
         PUBLISH_K8S_OVERLAY: ${{ inputs.publish_k8s_overlay }}
+      shell: bash
       run: |
         if [ -z "$PUBLISH_K8S_OVERLAY" ]; then
           echo "publish_images is true but publish_k8s_overlay names no overlay." >&2
@@ -651,7 +546,7 @@ jobs:
         # read by the runs above, against these same images, and reading them
         # again here would add nothing but a way for a publish to fail.
         "$RUNNER_TEMP/fresh-cluster.sh"
-        uvx --from ${{ inputs.python_dir }} seal ci -- \
+        uvx --from ${{ github.action_path }}/../../python seal ci -- \
           --k8s_overlay "$PUBLISH_K8S_OVERLAY" --build_type runtime \
           --publish_images --run_outcomes false
 
@@ -664,6 +559,7 @@ jobs:
       working-directory: ${{ inputs.project_dir }}
       env:
         PRIMARY_K8S_OVERLAY: ${{ inputs.k8s_overlay }}
+      shell: bash
       run: |
         # Through the CLI, not a parser of this file's own: `seal
         # _tests-results` reads the reports with the same junit.py that
@@ -685,7 +581,7 @@ jobs:
         # Assigned before it is written, so a command that failed fails the
         # step: `echo "results=$(...)"` would report the echo's own success
         # and hand the caller an empty output to guess at.
-        results="$(uvx --from ${{ inputs.python_dir }} seal _tests-results "${runs[@]}")"
+        results="$(uvx --from ${{ github.action_path }}/../../python seal _tests-results "${runs[@]}")"
         # One line of JSON, so it needs none of $GITHUB_OUTPUT's delimiter
         # syntax: a newline inside a rendered value is escaped by the JSON
         # itself.
@@ -710,4 +606,3 @@ jobs:
         # a caller reads that rather than inferring anything from a download
         # that found nothing.
         if-no-files-found: ignore
-

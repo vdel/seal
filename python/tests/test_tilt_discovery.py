@@ -2,8 +2,8 @@
 parsing -- specifically, that it finds a service's build context regardless
 of which build function actually built it.
 
-`cached_docker_build()`'s `custom_build()` (SEAL_BUILDX_CACHE=1, the
-reusable workflows' default -- see build.Tiltfile) reports the context
+`cached_docker_build()`'s `custom_build()` (SEAL_BUILDX_CACHE=1, the CI
+action's default -- see build.Tiltfile) reports the context
 directory under `BuildDetails.dir`, not `BuildDetails.context` like Tilt's
 native `docker_build()` does (see tilt_discovery.py's module docstring).
 Reading only `context` silently discovers zero services under
@@ -94,7 +94,7 @@ def test_tiltfile_config_args_no_dashdash_means_no_tiltfile_args():
 
 
 def test_tiltfile_config_args_keeps_dashdash_when_it_is_first():
-    """seal-ci.yml's own calls (`seal ci -- --k8s_overlay dev --build_type
+    """the `ci` action's own calls (`seal ci -- --k8s_overlay dev --build_type
     test`): no tilt-cli flags before '--', so the whole thing -- '--'
     included -- passes through unchanged. The '--' must be kept, not stripped:
     `config.parse()` (tilt/seal/config.Tiltfile) only reads Tiltfile config

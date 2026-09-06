@@ -30,7 +30,7 @@ on:
       # the tree to the rules every adopting project's is held to, so a
       # change to it has to run the job that checks it.
       - 'outcomes/**'
-      # The workflows, wholesale: the suite reads seal-ci.yml -- holding it
+      # The workflows, wholesale: the suite reads actions/ci -- holding it
       # to the flags the Tilt extension defines, and to every run being one
       # `seal ci` a person can type -- and this file decides what the suite
       # runs on at all. A change to either is checked by the guard that
@@ -50,7 +50,7 @@ on:
       # the tree to the rules every adopting project's is held to, so a
       # change to it has to run the job that checks it.
       - 'outcomes/**'
-      # The workflows, wholesale: the suite reads seal-ci.yml -- holding it
+      # The workflows, wholesale: the suite reads actions/ci -- holding it
       # to the flags the Tilt extension defines, and to every run being one
       # `seal ci` a person can type -- and this file decides what the suite
       # runs on at all. A change to either is checked by the guard that
@@ -136,7 +136,7 @@ jobs:
       # (0 jobs scheduled), so the emptiness check happens in the shell below.
       #
       # These steps are this repository's own, not something seal supplies.
-      # seal-ci.yml takes a `provider_setup` input instead, and what a
+      # actions/ci takes a `provider_setup` input instead, and what a
       # caller passes it looks like this.
       env:
         PROTON_PASS_PERSONAL_ACCESS_TOKEN: ${{ secrets.PROTON_PASS_PERSONAL_ACCESS_TOKEN }}
@@ -169,7 +169,7 @@ jobs:
           # suite would have given. The warning is what keeps the narrower
           # run from reading as a full green one.
           #
-          # Deliberately not mirrored in seal-ci.yml: `seal ci` there has
+          # Deliberately not mirrored in actions/ci: `seal ci` there has
           # to resolve each service's .env for real to generate its Secret,
           # so a login failure genuinely blocks that job and is better
           # reported here, at its cause.
