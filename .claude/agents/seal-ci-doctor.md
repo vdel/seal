@@ -43,8 +43,8 @@ no diagnosis, so you report and stop.
 - `seal ci` failing where `seal up` works is the design -- `seal up` runs
   none of the checks.
 - In CI specifically: an environment-scoped secret arrives empty unless the
-  caller workflow also names it in its own `secrets:` block, and a
-  reusable-workflow job only gets the `permissions:` its caller declares.
+  job running the action binds that `environment:` itself, since the action
+  is handed a value the caller resolved.
 
 ## Hard limits
 

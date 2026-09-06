@@ -21,10 +21,10 @@ load('../docker_build/Tiltfile', 'cached_docker_build')
 
 # Tells seal_service() (use_cache=True, the default) to build via
 # cached_docker_build() -- a GitHub-Actions-cached buildx build -- instead of
-# Tilt's native docker_build(). Only a CI workflow sets this
-# (.github/workflows/seal-ci.yml at the repo root does, and so does a
-# deploy pipeline); local `tilt up` never does, so it keeps Tilt's native
-# (faster, better-supported) build and live_update path.
+# Tilt's native docker_build(). Only a CI run sets this (the `ci` action at
+# /actions/ci does, and so does a deploy pipeline); local `tilt up` never
+# does, so it keeps Tilt's native (faster, better-supported) build and
+# live_update path.
 #
 # Checked here, not inside cached_docker_build() itself, which always takes
 # the buildx path once called -- deciding whether that path is wanted at all

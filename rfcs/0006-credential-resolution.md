@@ -215,21 +215,28 @@ wrong store.
 
 A provider's CLI is authenticated before Seal invokes it -- true of
 every product surveyed, and what keeps credentials out of the declaration.
-That is also a requirement somebody has to meet, and in CI that somebody is a
-workflow.
+That is also a requirement somebody has to meet, and in CI that somebody is
+the pipeline.
 
-If the reusable workflow installed and logged into one product, adding a
+If the CI action installed and logged into one product, adding a
 provider would be a change to Seal rather than a line in a project's
-declaration -- the exact thing this design exists to stop. So the workflow
+declaration -- the exact thing this design exists to stop. So the action
 holds its caller to a contract instead: **by the time it runs `seal
 ci`, every CLI the project's declarations name is on `PATH` and
 authenticated.** It takes a shell input that runs before the gate, and one
-token secret that reaches it, and never names a store.
+token input that reaches it, and never names a store.
 
-Deliberately shell rather than an action to `uses:`. A reusable workflow
-resolves a local action reference against the *caller's* checkout, so it
-would work for a caller inside this repository and break every caller outside
-it -- a difference no test here could catch.
+The token is passed by value rather than by name. An action runs inside the
+calling job, so that job binds `environment:` and every `secrets.X` it reads
+resolves there -- which is what makes one environment's run reach one
+environment's store. A reusable workflow cannot be called from a job that
+binds an Environment at all, and a per-environment credential could then only
+be reached by handing the callee a secret's *name* to look up.
+
+Deliberately shell rather than an action to `uses:`. A local action
+reference resolves against the *caller's* checkout even from inside an
+action, so it would work for a caller inside this repository and break every
+caller outside it -- a difference no test here could catch.
 
 Empty by default, and correct empty: a project whose `.env` files hold only
 literals and `k8s://` markers reaches no provider and should not have to say

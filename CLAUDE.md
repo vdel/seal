@@ -183,13 +183,13 @@ Deployment declares a `readinessProbe`, without which Kubernetes reports a
 container Ready the instant its process starts (see
 `rfcs/0003-readiness.md`). It never touches a real cluster. It takes a
 `project_dir` and, optionally, one credential for whatever store the
-project's `.env` files reference -- passed as `secrets.provider_token`, or
-named by `provider_token_secret` when it should come from the run's own
-GitHub Environment rather than repository scope. Which CLI opens that store
-is the project's `provider_setup` to say: `seal ci` resolves an app's own
-credentials straight from its `.env` files, the same way `seal up` does for
-local dev, so this workflow never needs to know an app's variable names, or
-its store's name (see `rfcs/0006-credential-resolution.md`).
+project's `.env` files reference -- passed by value as `provider_token`,
+read by the calling job, which is what binds the GitHub Environment it
+resolves against. Which CLI opens that store is the project's
+`provider_setup` to say: `seal ci` resolves an app's own credentials
+straight from its `.env` files, the same way `seal up` does for local dev,
+so the action never needs to know an app's variable names, or its store's
+name (see `rfcs/0006-credential-resolution.md`).
 
 Publishing an image to a real registry, deploying an overlay that names a
 real environment, and sealing credentials for one are all part of the

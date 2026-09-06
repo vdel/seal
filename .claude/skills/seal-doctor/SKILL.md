@@ -66,10 +66,11 @@ four things, in this order: the run selected the environment you think
 (`--credentials_env`, else `SEAL_CREDENTIALS_ENV`, else `default_env`
 -- and it is independent of `--k8s_overlay`); the declaration maps that
 provider for that environment; the token is set on the **GitHub Environment**
-the job binds to rather than as a repository secret; and the caller workflow
-names that secret in its own `secrets:` block -- without the passthrough it
-silently arrives empty. There is deliberately no fallback -- this same `.env`
-is what production resolves.
+rather than as a repository secret; and the job running the action binds that
+`environment:` -- `provider_token` is read in the caller's own job, so
+without the binding it resolves at repository scope and silently arrives
+empty. There is deliberately no fallback -- this same `.env` is what
+production resolves.
 
 ## Bringing an environment up
 

@@ -180,23 +180,31 @@ property of the images, not a policy imposed on top.
 
 Row 5 is out of scope ([RFC 0001](0001-library-boundary.md)).
 
-### The reusable workflow's shape
+### The action's shape
 
-The workflow takes the primary overlay, an optional list of additional
+The pipeline ships as a composite action rather than a reusable workflow,
+because the `seal` CLI it runs lives in this repository. `uses:` on an
+action checks out the action's own repository and points
+`$GITHUB_ACTION_PATH` into it, so the CLI is there at the same revision as
+the YAML running it -- nothing to name, fetch, or keep a second pin in step
+with. A reusable workflow ships only its `.yml`, leaving every caller to
+vendor the CLI or resolve it by git reference.
+
+It also runs inside the calling job, which is what lets that job bind
+`environment:` and pass a per-environment credential by value
+([RFC 0006](0006-credential-resolution.md)).
+
+The action takes the primary overlay, an optional list of additional
 overlays, and the publishing inputs. The inputs are deliberately not named
 after any one project's directory names: the distinction they draw is *which
 overlay's run also carries the unit tests* versus *which additional shapes get
 their outcomes verified*, which stays true for a project that spells its
 overlays some other way.
 
-**The runs are steps in one job rather than jobs.** Roughly two hundred lines
-install the tooling a run needs, and that cannot be shared between jobs: a
-local action reference inside a reusable workflow resolves against the
-*caller's* checkout, so a composite action -- or a second reusable workflow --
-would work for a caller inside this repository and break every caller outside
-it. That difference is invisible to this repository's own CI, so it is not a
-risk testing would catch. Three verbatim copies of the setup is the
-alternative, and one job that installs once is better than either.
+**The runs are steps in one job.** An action's steps are one job by
+construction -- an action cannot define jobs -- and that suits what the runs
+need anyway: roughly two hundred lines install the tooling, and each run
+wants the cluster, the images and the tooling the ones before it set up.
 
 What that costs is parallelism: the shapes are verified one after another.
 What it buys, beyond the setup, is that publishing needs no cross-job plumbing
