@@ -184,7 +184,7 @@ What's left is the gate:
 5. **Write down what your application promises** in `outcomes/`, and put the
    tree under a `CODEOWNERS` rule -- see [Outcome tests](guides/outcomes.md)
    and [The merge gate](guides/merge-gate.md).
-6. **Point the reusable workflow at your project** so every pull request
+6. **Point the `ci` action at your project** so every pull request
    runs `seal ci` -- see
    [Continuous integration](guides/continuous-integration.md).
 

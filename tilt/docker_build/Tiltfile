@@ -6,7 +6,7 @@
 # /tilt/seal/build.Tiltfile, which seal_service() (use_cache=True,
 # the default) checks before calling anything here. That file load()s this one
 # by relative path, so a project registers only `seal`. Only a CI
-# workflow sets that variable -- .github/workflows/seal-ci.yml at the
+# workflow sets that variable -- actions/ci/action.yml at the
 # repo root does, and so does a deploy pipeline; local `tilt up` never does.
 # See that
 # workflow's "Set up Docker Buildx" / "Expose GitHub Actions cache to buildx"

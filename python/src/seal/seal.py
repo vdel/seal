@@ -377,8 +377,8 @@ MAX_RENDERED_FAILURES = 50
 def cmd_tests_results(args: list[str]) -> int:
     """Internal: what every run of a pipeline found, as JSON on stdout.
 
-    The reusable workflow (.github/workflows/seal-ci.yml) calls this to hand
-    its results to whoever called it, so a caller can report on them without
+    The CI action (actions/ci/action.yml) calls this to hand its results
+    to whoever used it, so a caller can report on them without
     downloading an artifact and parsing XML -- and without this repository
     deciding how a project's results are presented.
 

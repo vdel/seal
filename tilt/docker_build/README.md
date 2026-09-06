@@ -15,7 +15,7 @@ cached_docker_build(
 Unlike Tilt's built-in `docker_build()`, `cached_docker_build()` always
 takes the `buildx` path -- it doesn't check `SEAL_BUILDX_CACHE`
 itself. Deciding when that's actually wanted (only under a CI workflow that
-sets `SEAL_BUILDX_CACHE` -- `.github/workflows/seal-ci.yml` at
+sets `SEAL_BUILDX_CACHE` -- the `ci` action (`actions/ci`) at
 the repo root does, and so does a deploy pipeline; never local `tilt up`) is
 the caller's job -- see `/tilt/seal/README.md`'s `build.Tiltfile`
 section for how `seal_service()` makes that decision for you. It

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Translated from prompt.md, beside this file.
 
-The promise is about the reusable CI workflow this library ships
-(.github/workflows/seal-ci.yml -- part of python/'s deliverable, not
-examples/angular-django's own workflow, which merely calls it): that every
+The promise is about the CI action this library ships
+(actions/ci/action.yml -- part of the deliverable, not
+examples/angular-django's own workflow, which merely uses it): that every
 step deciding a promise is `seal ci` itself, forwarded the flags a
 person would type by hand, and that CI's own verdict is that command's own
-exit status rather than something the workflow works out on its own. That is
+exit status rather than something the action works out on its own. That is
 established statically, by reading the shipped file -- there is no project
 to build here, and no cluster needed.
 
@@ -30,9 +30,9 @@ What this reading checked, and what it left alone:
 
 What this reading chose to leave alone, because the promise does not reach
 it: the "Plan the overlays" step, which turns a JSON-list *input* the
-reusable workflow itself exposes into a newline list a shell loop can read.
-It decides no promise and calls no `seal` command -- it is workflow
-plumbing for a caller-facing input, the same category of thing a person
+action itself exposes into a newline list a shell loop can read.
+It decides no promise and calls no `seal` command -- it is plumbing
+for a caller-facing input, the same category of thing a person
 typing `seal ci` by hand would resolve themselves before deciding how
 many times to type it. Tool installation, the Docker-daemon wait, and the
 per-run cluster script are the same: what the prompt says is not claimed
@@ -52,7 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from helpers import check, expect  # noqa: E402
 from helpers.cli import REPO_ROOT  # noqa: E402
 
-WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "seal-ci.yml"
+GATE_PATH = REPO_ROOT / "actions" / "ci" / "action.yml"
 
 STEP_HEADER = re.compile(r"^    - name: (.+)$", re.MULTILINE)
 RUN_BODY = re.compile(r"^      run: \|\n((?:(?:[ ]{8,}.*)?\n)*)", re.MULTILINE)
@@ -63,8 +63,8 @@ RUN_BODY = re.compile(r"^      run: \|\n((?:(?:[ ]{8,}.*)?\n)*)", re.MULTILINE)
 # itself accepts, nothing invented for CI's sake.
 ALLOWED_FLAGS = {"--k8s_overlay", "--build_type", "--publish_images", "--run_outcomes"}
 
-# What a workflow rolling its own JUnit reader would leave lying around in a
-# step's script, instead of going back through `seal _tests-results`.
+# What a step rolling its own JUnit reader would leave lying around in its
+# own script, instead of going back through `seal _tests-results`.
 HAND_ROLLED_PARSER_MARKS = ("ElementTree", "xml.etree", "grep ", "awk ")
 
 
@@ -156,10 +156,10 @@ def expect_is_the_command_itself(name: str, body: str, subcommand_flags: set[str
 
 def body_fn() -> None:
     expect(
-        WORKFLOW_PATH.is_file(),
-        f"the reusable gate this library ships is at {WORKFLOW_PATH}",
+        GATE_PATH.is_file(),
+        f"the gate this library ships is at {GATE_PATH}",
     )
-    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    text = GATE_PATH.read_text(encoding="utf-8")
     steps = steps_in(text)
 
     gate_steps = {
@@ -168,7 +168,7 @@ def body_fn() -> None:
         "Publish the images": {"--k8s_overlay", "--build_type", "--publish_images", "--run_outcomes"},
     }
     for name, subcommand_flags in gate_steps.items():
-        expect(name in steps, f"the workflow has a '{name}' step:\n{sorted(steps)}")
+        expect(name in steps, f"the action has a '{name}' step:\n{sorted(steps)}")
         expect_is_the_command_itself(name, run_body(steps[name]), subcommand_flags)
 
     # The two runs that loop over more than one overlay carry their own exit

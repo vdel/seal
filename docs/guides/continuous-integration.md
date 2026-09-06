@@ -1,11 +1,11 @@
 # Continuous integration
 
-Seal ships the build-and-test pipeline as a reusable GitHub Actions
-workflow, so a project's own CI file is boilerplate that points at it.
+Seal ships the build-and-test pipeline as a composite GitHub Action, so a
+project's own CI file is boilerplate that uses it.
 
 ## What a green run means
 
-The workflow runs `seal ci`, and `seal ci` exits zero only when
+The action runs `seal ci`, and `seal ci` exits zero only when
 **both** of these hold:
 
 1. **The environment came up.** Every resource Tilt manages reported ready
@@ -47,22 +47,29 @@ on:
 
 jobs:
   tests:
-    uses: ./.github/workflows/seal-ci.yml
+    runs-on: ubuntu-latest
+    # Your job binds the Environment, so the secret below resolves against
+    # it and the action receives the value. See "Why an action" below.
+    environment: dev
     permissions:
       contents: read
-    with:
-      project_dir: my-project
-      gh_environment: dev
-      k8s_overlay: dev            # the shape the gate deploys
-      publish_images: false
-      # Only if your services' `.env` files reference a store. Put the CLI
-      # your seal-credentials-config.json names on PATH, and log it in --
-      # `secrets.provider_token` reaches this shell as $SEAL_PROVIDER_TOKEN.
-      provider_setup: |
-        curl -fsSL https://example.invalid/install.sh | bash
-        echo "$SEAL_PROVIDER_TOKEN" | its-cli login
-    secrets:
-      provider_token: ${{ secrets.WHATEVER_YOUR_STORE_CALLS_ITS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - id: seal
+        uses: vdel/seal/actions/ci@<ref>
+        with:
+          project_dir: my-project
+          k8s_overlay: dev            # the shape the gate deploys
+          publish_images: false
+          # Only if your services' `.env` files reference a store. Put the
+          # CLI your seal-credentials-config.json names on PATH, and log it
+          # in -- `provider_token` reaches this shell as
+          # $SEAL_PROVIDER_TOKEN.
+          provider_setup: |
+            curl -fsSL https://example.invalid/install.sh | bash
+            echo "$SEAL_PROVIDER_TOKEN" | its-cli login
+          provider_token: ${{ secrets.WHATEVER_YOUR_STORE_CALLS_ITS_TOKEN }}
 ```
 
 Note what isn't there: **your application's variable and secret names**, and
@@ -70,8 +77,10 @@ Note what isn't there: **your application's variable and secret names**, and
 own `.env` through the providers your project declares, the same way
 `seal up` does locally, so this file never enumerates them and never
 goes stale against them. A project whose `.env` files hold only literals and
-`k8s://` markers drops both the `provider_setup` and the `secrets:` block
-entirely.
+`k8s://` markers drops both `provider_setup` and `provider_token` entirely.
+
+Nor is there a pin for the `seal` CLI. `uses:` checks out this action's own
+repository, so the CLI is already beside it, at the revision `<ref>` names.
 
 ## Inputs
 
@@ -82,53 +91,18 @@ entirely.
 | `additional_k8s_overlays` | no | Further overlays to verify your promises against, as a JSON list -- `'["prod-like"]'`. Each runs the outcome suite alone, against the images a real environment runs. Empty by default. |
 | `publish_images` | yes | Whether to push the images built, once every gate above has passed. |
 | `publish_k8s_overlay` | when publishing | Which overlay the publishing run deploys. Publishing means deploying and letting Tilt push what it built, so it still names a shape -- the one the deployment will use. |
-| `gh_environment` | yes | The GitHub Environment this job binds to -- protection rules, and scoping for what the workflow reads from `vars`/`secrets` itself. Not `credentials_env` below, which picks which store your `.env` references resolve against. |
 | `ref` | no | Branch or SHA to check out. Defaults to the triggering ref. |
-| `runs_on` | no | Runner label. Defaults to `ubuntu-latest`. Everything beyond a Linux machine with a reachable Docker daemon -- uv, Tilt, ctlptl, kubectl, kind, rsync -- the job installs itself, so a self-hosted label works too. |
 | `provider_setup` | no | Shell run before `seal ci`, putting every CLI your `seal-credentials-config.json` names on `PATH` and authenticating it. `provider_token` reaches it as `$SEAL_PROVIDER_TOKEN`. Empty by default, and correct empty: a project whose `.env` files hold only literals and `k8s://` markers reaches no provider and needs no CLI. |
 | `credentials_env` | no | Which of your credentials environments this run reads -- which store each `.env` reference resolves against, per your own `seal-credentials-config.json`. Reaches `seal ci` as `SEAL_CREDENTIALS_ENV`. Left empty, your `default_env` applies. Deliberately independent of `k8s_overlay`: deriving one from the other would make a production-shaped overlay on a throwaway cluster reach real secrets. |
-| `python_dir` | no | Path, relative to `project_dir`, to Seal's own checked-out `python/` package. Defaults to `../../python`. |
-| `results_artifact` | no | Name of the artifact the run uploads its results to. Defaults to `tests-results`. An artifact name has to be unique within a workflow run, so give each call its own name if you call this workflow more than once. |
+| `results_artifact` | no | Name of the artifact the run uploads its results to. Defaults to `tests-results`. An artifact name has to be unique within a workflow run, so give each use its own name if you use this action more than once. |
 | `results_retention_days` | no | How long that artifact is kept. Defaults to 7: it exists for your own reporting job to read in the same run. |
 
-### Secrets
-
-| Secret | Required | Meaning |
-| --- | --- | --- |
-| `provider_token` | no | One credential for `provider_setup` to authenticate with, reaching it as `$SEAL_PROVIDER_TOKEN`. What it opens, and which store, is your project's business. |
-| `source_repo_token` | no | Read access to whatever the checkout needs beyond your own repository — in practice a private git submodule vendoring Seal. Falls back to `GITHUB_TOKEN`. |
-
-### About `python_dir`
-
-A reusable-workflow call checks out only the *caller's* repository. The
-`../../python` default therefore resolves only when your project lives
-inside a checkout of Seal itself, two directories deep -- which is
-true of the bundled example and not of your project.
-
-A project in its own repository that vendors Seal as a git submodule
-overrides it to point at the submodule's own `python/`:
-
-```yaml
-with:
-  project_dir: my-project
-  python_dir: seal/python     # submodule checked out at my-project/seal
-```
-
-If that submodule is **private**, pass a token that can read it as the
-`source_repo_token` secret. `GITHUB_TOKEN` is scoped to the repository whose
-workflow is running and can read no other, so the submodule's clone
-otherwise fails with a bare "Repository not found" before any step of the
-job runs — and nothing later recovers, since both the Tilt extensions and
-the CLI resolve out of that checkout.
-
-```yaml
-secrets:
-  source_repo_token: ${{ secrets.A_TOKEN_THAT_CAN_READ_IT }}
-```
+| `provider_token` | no | One credential for `provider_setup` to authenticate with, reaching it as `$SEAL_PROVIDER_TOKEN`. What it opens, and which store, is your project's business. Passed by value: read it from `secrets` in your own job, which is what binds the Environment it resolves against. |
+| `submodules_token` | no | Read access to whatever the checkout needs beyond your own repository -- a private git submodule your project vendors. `GITHUB_TOKEN` is scoped to the repository whose workflow is running and can read no other, so without this such a submodule fails to clone with a bare "Repository not found" before any later step runs. Nothing about Seal itself needs it: the CLI is this action's own repository, checked out beside it. |
 
 ## Outputs
 
-The workflow doesn't publish a report. It reads the JUnit reports its runs
+The action doesn't publish a report. It reads the JUnit reports its runs
 left behind and hands them back, so **how your results are presented is your
 project's decision** rather than one you inherit -- along with whichever
 third-party action implements it, the write scopes that action needs on your
@@ -232,7 +206,7 @@ One, and it's infrastructure-level rather than application config:
 
 **`provider_token`** -- one credential for your `provider_setup` script to
 authenticate with, reaching it as `$SEAL_PROVIDER_TOKEN`. What it
-opens, and which store, is your project's business: the workflow never names
+opens, and which store, is your project's business: the action never names
 one. Scope it to only what this environment should read. Optional: only
 needed if a service's `.env` actually references a provider. See
 [Credentials](credentials.md#ci-staging-and-production).
@@ -241,30 +215,61 @@ Set it under **Settings → Environments → `<name>` → Secrets**, not as a
 repository secret. Per-environment scoping is what makes a `dev` token
 unable to read a `prod` store.
 
-## Three GitHub Actions quirks
+## Why an action, and what follows from it
 
-None is obvious from GitHub's own documentation, and each one fails quietly:
+The pipeline is a composite action rather than a reusable workflow, and two
+things follow that shape your own CI file.
 
-**A job that calls a reusable workflow can't also set `environment:` on
-itself.** GitHub rejects the whole file. That's why `gh_environment` is
-threaded through as a plain input -- the reusable workflow's own job binds
-to it directly. The consequence: every `vars.X` expression in *your* caller
-resolves at repository/organisation scope, not the environment's.
+**The `seal` CLI travels with the action.** `uses:` on an action checks out
+its whole repository and points `$GITHUB_ACTION_PATH` into it, so `python/`
+is right there -- at the revision the action was used at. Nothing names it,
+nothing fetches it, and it cannot be a different version from the YAML
+running it. A reusable workflow ships only its `.yml`, which is why one
+would leave you to vendor the CLI as a submodule or pin it by git reference
+and keep that pin in step by hand.
 
-**`secrets.X` doesn't follow that same rule.** GitHub resolves an
-environment-scoped secret for a reusable-workflow job only if that secret
-was *also* named in the caller's own `secrets:` block -- even though the
-value the caller passes is empty (the caller job isn't bound to any
-environment). Drop the passthrough and the value silently arrives empty,
-even with the secret correctly set on the environment.
+**Your job binds the environment, and passes values.** An action runs inside
+the calling job, so that job sets `environment:` on itself and every
+`secrets.X`/`vars.X` it reads resolves against that Environment. What the
+action receives is the value:
 
-**A reusable-workflow job only gets the `permissions:` its caller
-declares.** Where a repository's default `GITHUB_TOKEN` permissions are
-read-only, the `permissions:` block above must cover whatever the callee's
-jobs request, or the run fails at startup with zero jobs scheduled. This one
-requests `contents: read` and nothing else -- it reads your repository and
-reports nothing back to it. The write scopes belong on your own reporting
-job, if you write one.
+```yaml
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+    outputs:
+      overlays: ${{ steps.seal.outputs.overlays }}
+      results: ${{ steps.seal.outputs.results }}
+      results_artifact: ${{ steps.seal.outputs.results_artifact }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: seal
+        uses: vdel/seal/actions/ci@<ref>
+        with:
+          project_dir: .
+          k8s_overlay: dev
+          publish_images: false
+          provider_token: ${{ secrets.WHATEVER_YOUR_STORE_CALLS_IT }}
+```
+
+Two details in that shape are easy to miss:
+
+- **Re-expose the outputs.** An action's outputs belong to the step; a
+  job's belong to whatever `needs:` it. If a later job fans out over
+  `overlays` or reports from `results`, the job running the action has to
+  declare them as its own.
+- **`permissions:` is yours to set.** An action runs under whatever the
+  calling job has. This one reads your repository and reports nothing back
+  to it, so `contents: read` is enough -- the write scopes belong on your
+  own reporting job, if you write one.
+
+**One pin is left.** Your root Tiltfile registers the Starlark half with
+`v1alpha1.extension_repo(ref=...)`. The Starlark and the Python are one
+library, so that ref and the ref you use this action at have to name the
+same revision.
 
 ## What the job actually does
 
@@ -281,7 +286,7 @@ job, if you write one.
    environment as `$SEAL_PROVIDER_TOKEN` -- but only if you passed
    one, which a project whose `.env` files reference no provider does not
    need to.
-6. Runs the gate on `k8s_overlay`: `uvx --from <python_dir> seal ci --
+6. Runs the gate on `k8s_overlay`: `uvx --from <the action's own python/> seal ci --
    --k8s_overlay <k8s_overlay> --build_type test`. This is the run that also
    executes each service's own tests, because `test` is the build kind whose
    images carry them.

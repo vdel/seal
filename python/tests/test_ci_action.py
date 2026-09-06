@@ -1,4 +1,4 @@
-"""The contract `.github/workflows/seal-ci.yml` holds, read off the file itself.
+"""The contract `actions/ci/action.yml` holds, read off the file itself.
 
 Two of its properties are load-bearing and neither has anywhere else to fail.
 
@@ -23,7 +23,7 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = REPO_ROOT / ".github" / "workflows" / "seal-ci.yml"
+ACTION = REPO_ROOT / "actions" / "ci" / "action.yml"
 CALLER = REPO_ROOT / ".github" / "workflows" / "internal-example.yml"
 CONFIG_TILTFILE = REPO_ROOT / "tilt" / "seal" / "config.Tiltfile"
 
@@ -32,19 +32,27 @@ CONFIG_TILTFILE = REPO_ROOT / "tilt" / "seal" / "config.Tiltfile"
 SEAL_CI = "seal ci --"
 
 
+def _caller_with() -> dict:
+    """What the worked caller passes the action -- on the step that uses it,
+    not on the job."""
+    steps = yaml.safe_load(CALLER.read_text(encoding="utf-8"))["jobs"]["tests"]["steps"]
+    step = next(s for s in steps if str(s.get("uses", "")).endswith("actions/ci"))
+    return step.get("with", {})
+
+
 def _workflow() -> dict:
-    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    return yaml.safe_load(ACTION.read_text(encoding="utf-8"))
 
 
-def _workflow_call_inputs() -> dict:
+def _action_inputs() -> dict:
     # `on` is read back as the boolean True: YAML 1.1 spells `true` several
     # ways and this is one of them, which every GitHub workflow trips over.
     workflow = _workflow()
-    return workflow[True]["workflow_call"]["inputs"]
+    return _workflow()["inputs"]
 
 
 def _steps() -> list[dict]:
-    return _workflow()["jobs"]["tests"]["steps"]
+    return _workflow()["runs"]["steps"]
 
 
 def _run_scripts() -> list[str]:
@@ -93,7 +101,7 @@ def _flags_passed(invocation: list[str]) -> set[str]:
 
 @pytest.fixture(scope="module")
 def inputs() -> dict:
-    return _workflow_call_inputs()
+    return _action_inputs()
 
 
 def test_a_project_says_which_overlay_the_gate_deploys(inputs):
@@ -116,8 +124,11 @@ def test_publishing_is_asked_for_rather_than_inferred(inputs):
     """A boolean of its own, and required: inferring it from an overlay name
     is what makes deploying a production-shaped overlay on a throwaway
     cluster start pushing images."""
-    assert inputs["publish_images"]["type"] == "boolean"
     assert inputs["publish_images"]["required"] is True
+    # No `type:`: an action's inputs are strings, so the flag is required
+    # rather than defaulted -- there is no false to fall back to that a
+    # reader could mistake for "off".
+    assert "type" not in inputs["publish_images"]
 
 
 def test_a_publishing_run_still_names_a_shape(inputs):
@@ -227,6 +238,26 @@ def test_publishing_waits_for_every_gate_to_have_passed():
     assert "inputs.publish_images" in publish_step["if"]
 
 
+def test_a_boolean_input_is_compared_and_never_read_for_truthiness():
+    """Every input an action receives is a string, so `if: inputs.x` is true
+    for the literal "false". A step gated that way runs for a caller that
+    asked for the opposite -- here, publishing runs for a caller that wanted
+    none, and then fails on its own missing-overlay guard, which reads as the
+    gate being broken rather than as the condition being wrong.
+
+    Held on the condition's shape rather than on one step: the trap is the
+    same for any input a future step gates on."""
+    for step in _steps():
+        condition = str(step.get("if", ""))
+        for reference in re.findall(r"inputs\.[A-Za-z_][A-Za-z0-9_]*", condition):
+            rest = condition[condition.index(reference) + len(reference):].lstrip()
+            assert rest.startswith(("==", "!=")), (
+                f"{step.get('name')!r} reads {reference} for truthiness in "
+                f"{condition!r}; compare it to a string instead -- \"false\" is "
+                f"truthy."
+            )
+
+
 def test_each_run_starts_from_a_cluster_with_nothing_on_it():
     """An object the next overlay does not declare keeps running otherwise,
     so a promise can be kept by a container the shape under test removed.
@@ -271,17 +302,18 @@ def test_the_caller_is_handed_the_results_rather_than_a_report_of_them():
     along with the write scopes it needs on their pull requests and the kind
     of runner it happens to require -- so this file hands back what the runs
     found and stops there."""
-    # `on` reads back as the boolean True -- see _workflow_call_inputs().
-    outputs = _workflow()[True]["workflow_call"]["outputs"]
-
+    outputs = _workflow()["outputs"]
     assert {"overlays", "results", "results_artifact"} <= set(outputs)
 
-    for job_name, job in _workflow()["jobs"].items():
-        for scope in job.get("permissions", {}):
-            assert scope == "contents", (
-                "job '{}' asks a caller for '{}' -- the reusable workflow "
-                "reads a repository and reports nothing to it".format(job_name, scope)
-            )
+    # An action declares no `permissions:` -- it runs under whatever the
+    # calling job has, so a scope cannot be asserted here. What can is that
+    # nothing reports: no step posts a check, a comment or a status.
+    for step in _steps():
+        run = str(step.get("run", ""))
+        uses = str(step.get("uses", ""))
+        assert not run.lstrip().startswith("gh "), "no step reports through gh"
+        assert " gh api" not in run and "\ngh " not in run
+        assert "github-script" not in uses, "no step reports through github-script"
 
 
 def test_the_results_are_read_by_the_cli_that_decided_the_run_s_own_verdict():
@@ -302,7 +334,7 @@ def test_the_reports_themselves_survive_the_run_that_produced_them():
     upload = next(
         step for step in _steps() if step.get("uses", "").startswith("actions/upload-artifact")
     )
-    inputs = _workflow_call_inputs()
+    inputs = _action_inputs()
 
     assert upload["with"]["name"] == "${{ inputs.results_artifact }}"
     assert "results_artifact" in inputs
@@ -341,8 +373,7 @@ def test_the_worked_example_publishes_from_the_reports_and_not_from_the_reading(
     """`results` says what the reports say; it is not the reports. An action
     publishing a check wants the XML, so the example downloads the artifact
     for it -- and takes the `checks: write` that needs on its own job, which
-    is the whole point of the reusable workflow no longer asking a caller
-    for it."""
+    is the whole point of the action not asking a caller for it."""
     report = yaml.safe_load(CALLER.read_text(encoding="utf-8"))["jobs"]["report"]
     download = next(
         step for step in report["steps"]
@@ -366,10 +397,10 @@ def test_this_repo_s_own_caller_fills_in_what_the_workflow_now_requires():
     """The worked example is the only caller here, so it is where a required
     input nobody passes shows up -- as a workflow that fails to start, with
     zero jobs scheduled and no test having run."""
-    passed = yaml.safe_load(CALLER.read_text(encoding="utf-8"))["jobs"]["tests"]["with"]
+    passed = _caller_with()
     required = {
         name
-        for name, spec in _workflow_call_inputs().items()
+        for name, spec in _action_inputs().items()
         if spec.get("required")
     }
 
@@ -394,7 +425,7 @@ def test_the_worked_example_verifies_more_than_one_shape():
         for path in (example / "k8s").iterdir()
         if path.is_dir() and (path / "kustomization.yaml").is_file()
     }
-    passed = yaml.safe_load(CALLER.read_text(encoding="utf-8"))["jobs"]["tests"]["with"]
+    passed = _caller_with()
     additional = yaml.safe_load(passed.get("additional_k8s_overlays") or "[]")
 
     assert len(overlays) > 1, "the example deploys one shape, so it proves nothing"
@@ -491,7 +522,7 @@ def test_installing_a_provider_is_the_callers_business():
     """The workflow ships to projects keeping their secrets anywhere. What
     puts a CLI on PATH and logs it in is the one thing only the caller
     knows, so it is passed in rather than built in."""
-    inputs = _workflow_call_inputs()
+    inputs = _action_inputs()
 
     assert "provider_setup" in inputs
     assert not inputs["provider_setup"].get("required", False)
@@ -499,25 +530,20 @@ def test_installing_a_provider_is_the_callers_business():
     # `k8s://` markers reaches no provider and should not have to say so.
     assert inputs["provider_setup"].get("default", "") == ""
 
-    # `on` reads back as the boolean True -- see _workflow_call_inputs().
-    secrets = _workflow()[True]["workflow_call"]["secrets"]
-    assert "provider_token" in secrets
-    assert not secrets["provider_token"].get("required", False)
+    assert "provider_token" in inputs
+    assert not inputs["provider_token"].get("required", False)
 
 
 def test_a_private_vendored_checkout_can_authenticate():
-    """The `python_dir` input invites a project to vendor this repo as a git
-    submodule. GITHUB_TOKEN can read only the repository whose workflow is
-    running, so a *private* submodule's clone fails before any step of the
-    job runs -- and nothing later can recover, since both the extensions and
-    the CLI resolve out of that checkout.
+    """A project vendoring something of its own as a private submodule needs
+    a token: GITHUB_TOKEN can read only the repository whose workflow is
+    running, so that clone fails before any later step runs.
 
-    Optional, and falling back to GITHUB_TOKEN: a public submodule, or none
-    at all, needs nothing from the caller."""
-    # `on` reads back as the boolean True -- see _workflow_call_inputs().
-    secrets = _workflow()[True]["workflow_call"]["secrets"]
-    assert "source_repo_token" in secrets
-    assert not secrets["source_repo_token"].get("required", False)
+    Nothing about Seal needs it -- the CLI is this action's own repository --
+    which is why it is optional and falls back to GITHUB_TOKEN."""
+    inputs = _action_inputs()
+    assert "submodules_token" in inputs
+    assert not inputs["submodules_token"].get("required", False)
 
     checkout = [step for step in _steps() if step.get("uses", "").startswith("actions/checkout@")]
     assert len(checkout) == 1, "one checkout, so there is one place a token has to reach"
@@ -526,7 +552,7 @@ def test_a_private_vendored_checkout_can_authenticate():
     # leave the submodule -- the only thing that actually needs it -- to
     # fail exactly as before.
     assert with_["submodules"] is True
-    assert with_["token"] == "${{ secrets.source_repo_token || github.token }}"
+    assert with_["token"] == "${{ inputs.submodules_token || github.token }}"
 
 
 def test_the_setup_step_runs_what_the_caller_passed_before_seal_ci():
@@ -557,14 +583,10 @@ def test_the_setup_step_runs_what_the_caller_passed_before_seal_ci():
     assert "inputs.provider_setup" in step.get("if", "")
 
     # The token reaches it under seal's own name, so the caller's secret can
-    # be called whatever that store calls it -- either by being passed under
-    # this workflow's name, or by naming itself through
-    # `provider_token_secret` (see the test below).
-    assert step["env"]["SEAL_PROVIDER_TOKEN"] == (
-        "${{ inputs.provider_token_secret != ''"
-        " && secrets[inputs.provider_token_secret]"
-        " || secrets.provider_token }}"
-    )
+    # be called whatever that store calls it. The calling job binds the
+    # Environment and reads it there, so the value that arrives is already
+    # the right environment's.
+    assert step["env"]["SEAL_PROVIDER_TOKEN"] == "${{ inputs.provider_token }}"
 
     # Before every `seal ci`: a CLI installed after the first resolution is
     # a CLI installed too late.
@@ -575,30 +597,32 @@ def test_the_setup_step_runs_what_the_caller_passed_before_seal_ci():
     )
     assert steps.index(step) < first_seal_ci
 
-def test_a_caller_can_name_the_secret_so_each_environment_supplies_its_own():
-    """A job that calls a reusable workflow cannot bind `environment:`, so
-    every `secrets.X` a caller writes resolves at repository scope -- one
-    value across every environment a project has. This job is
-    environment-bound, so a secret *it* resolves gets that Environment's own
-    value, and `provider_token_secret` is how a caller asks for that.
+def test_the_cli_comes_from_this_actions_own_checkout():
+    """`uses:` on an action checks its whole repository out, so `python/` is
+    there at the same revision as this file. Naming it as an input instead
+    would reintroduce two things at once: a credential to fetch it with, and
+    a revision that can differ from the YAML running it -- and the Starlark
+    half and the Python half are one library, so running two revisions is
+    running two libraries."""
+    assert not any("python" in name for name in _action_inputs()), (
+        "no input may say where the CLI comes from"
+    )
+    invocations = [
+        step["run"] for step in _steps()
+        if "uvx --from" in str(step.get("run", ""))
+    ]
+    assert invocations, "the CLI is invoked through uvx"
+    for run in invocations:
+        assert "${{ github.action_path }}/../../python" in run
 
-    Optional and defaulting to empty, because naming a secret only works for
-    a caller passing `secrets: inherit`; one with an explicit `secrets:`
-    block passes `provider_token` directly and needs none of this."""
-    inputs = _workflow_call_inputs()
 
-    assert "provider_token_secret" in inputs
-    assert not inputs["provider_token_secret"].get("required", False)
-    assert inputs["provider_token_secret"].get("default", "") == ""
-
+def test_nothing_reaches_for_a_secret_the_caller_did_not_pass():
+    """An action cannot read `secrets`/`vars`, and a reference to either
+    resolves to empty at runtime rather than failing. Every credential is an
+    input, so the calling job -- which binds the Environment -- is what
+    decides which environment's values arrive."""
+    text = ACTION.read_text(encoding="utf-8")
+    assert "${{ secrets." not in text
+    assert "${{ vars." not in text
     setup = [step for step in _steps() if "provider_setup" in str(step.get("run", ""))]
-    expression = setup[0]["env"]["SEAL_PROVIDER_TOKEN"]
-
-    # Resolved here rather than by the caller: that is the whole point, and
-    # an expression reading `secrets.provider_token_secret` instead would
-    # silently be the repository-scope behaviour again.
-    assert "secrets[inputs.provider_token_secret]" in expression
-    # A caller that names nothing keeps working, which is what lets one
-    # binding no Environment pass the credential straight in.
-    assert "secrets.provider_token" in expression
-
+    assert setup[0]["env"]["SEAL_PROVIDER_TOKEN"] == "${{ inputs.provider_token }}"

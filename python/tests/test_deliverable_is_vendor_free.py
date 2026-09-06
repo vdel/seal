@@ -1,6 +1,6 @@
 """The deliverable names no password manager.
 
-`tilt/`, `python/`, the reusable workflow and the agent skills are what an
+`tilt/`, `python/`, the CI action and the agent skills are what an
 adopting project gets. Which store a project keeps its secrets in is that
 project's own declaration (`seal-credentials-config.json`, see
 providers.py), so a product name appearing anywhere in the deliverable is a
@@ -29,13 +29,13 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # What the deliverable is: the two directories a project consumes, plus the
-# reusable workflow it calls. `internal-*.yml` are this repository's own CI
-# -- a caller, like any adopting project's would be -- and are free to name
-# whatever store this repository uses.
+# action it uses. `internal-*.yml` are this repository's own CI -- a caller,
+# like any adopting project's would be -- and are free to name whatever
+# store this repository uses.
 DELIVERABLE = (
     "python/src/seal",
     "tilt",
-    ".github/workflows/seal-ci.yml",
+    "actions/ci/action.yml",
     ".claude/skills",
     ".claude/agents",
 )

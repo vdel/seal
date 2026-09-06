@@ -62,9 +62,11 @@ The repo has four parts:
   own resources) and `docker_build` (CI-cached `docker_build()`, reached by
   `seal` itself). Nothing in here knows about Django, Angular, or any
   other app.
-- **`python/`** — a small Python CLI package (`seal`; see `python/README.md`)
-  and the reusable GitHub Actions test workflow in
-  `.github/workflows/seal-ci.yml`.
+- **`python/`** — a small Python CLI package (`seal`; see `python/README.md`).
+- **`actions/`** — the composite GitHub Actions this repo publishes: `ci`,
+  the generic build → test pipeline. An action rather than a reusable
+  workflow so the CLI above travels with it, at the same revision, needing
+  no credential to fetch.
 - **`.claude/`** — the agent-facing half (see `.claude/README.md`): skills
   and subagents that let a coding agent discover Seal in a repository and use
   it -- which `seal` command replaces which `tilt` one, what an outcome test
@@ -164,9 +166,9 @@ do, and none of them knows anything about an application. They describe
 Seal; they don't enforce it. What enforces is `seal check`, the
 outcome suite, and CODEOWNERS over the outcome tree.
 
-### `.github/workflows/seal-ci.yml`
+### `actions/ci` — the CI action
 
-A reusable workflow (`on: workflow_call`) implementing the generic build →
+A composite action implementing the generic build →
 test pipeline: checkout, install Tilt/ctlptl/uv/pass-cli, spin up a
 throwaway Kind cluster, run `seal ci` -- which runs each service's own
 tests inside its running container -- run the project's outcome suite
@@ -221,7 +223,7 @@ using `examples/angular-django/` as the reference:
   project's service list; there's no separate config file for it.
 - **`.github/workflows/<project>.yml`** (`internal-example.yml` here) — the
   *only* project-specific CI file, and it's boilerplate copied as-is: it
-  just points `seal-ci.yml` at the project directory. It doesn't enumerate the
+  just points the `ci` action at the project directory. It doesn't enumerate the
   project's own credentials at all -- see `rfcs/0006-credential-resolution.md`.
 
 ## Adapting this for your own project

@@ -24,8 +24,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# The two directories a project consumes. The reusable workflow is not
-# here: it runs `seal ci` and names no Kubernetes object at all.
+# The two directories a project consumes. The CI action is not here: it
+# runs `seal ci` and names no Kubernetes object at all.
 DELIVERABLE = ("python/src/seal", "tilt")
 
 # A name seal would be choosing on a project's behalf. `-secrets` is

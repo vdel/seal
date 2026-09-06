@@ -51,7 +51,7 @@ def _tiltfile_config_args(tilt_args: list[str]) -> list[str]:
     ("unknown flag: --build_type"). So: keep the '--' and everything
     after it, drop everything before it. Both shapes are real -- a deploy
     pipeline passes `--namespace "$NS" -- --k8s_overlay=...
-    --allowed_k8s_contexts=...`, while seal-ci.yml passes nothing before
+    --allowed_k8s_contexts=...`, while actions/ci passes nothing before
     the '--' at all -- so exercise both when touching this."""
     if "--" in tilt_args:
         return tilt_args[tilt_args.index("--") :]
