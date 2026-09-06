@@ -66,7 +66,7 @@ application behaves correctly, run against a throwaway cluster -- not that a
 on a cluster created and discarded per run, where the worst case of a
 misbehaving run is a dead Kind cluster.
 
-The same boundary has a security shape. A reusable workflow that accepted a
+The same boundary has a security shape. A CI action that accepted a
 kubeconfig would accept a credential granting cluster write; its worst case
 would stop being a throwaway cluster and start being production. What is
 worth sharing between the two sides is the flag vocabulary

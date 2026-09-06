@@ -5,20 +5,19 @@
 # is the caller's job, not this file's: see SEAL_BUILDX_CACHE in
 # /tilt/seal/build.Tiltfile, which seal_service() (use_cache=True,
 # the default) checks before calling anything here. That file load()s this one
-# by relative path, so a project registers only `seal`. Only a CI
-# workflow sets that variable -- actions/ci/action.yml at the
-# repo root does, and so does a deploy pipeline; local `tilt up` never does.
-# See that
-# workflow's "Set up Docker Buildx" / "Expose GitHub Actions cache to buildx"
-# steps for how the cache backend gets wired up before Tilt ever runs.
+# by relative path, so a project registers only `seal`. Only a CI run sets
+# that variable -- the `ci` action at /actions/ci does, and so does a deploy
+# pipeline; local `tilt up` never does. See that action's "Set up Docker
+# Buildx" / "Expose GitHub Actions cache to buildx" steps for how the cache
+# backend gets wired up before Tilt ever runs.
 #
 # Why this matters for where the cache lives: the GitHub Actions cache (and
 # the crazy-max/ghaction-github-runtime tokens that authenticate buildx
 # against it) are always scoped to whichever repository's Actions run is
-# executing -- i.e. the *caller* of these reusable workflows -- never to
-# wherever this seal package itself happens to live. A project that pulls
-# `seal` in from another repo still gets its own private build cache, with
-# nothing to configure here or in the reusable workflows.
+# executing -- i.e. whoever used the action -- never to wherever this seal
+# package itself happens to live. A project that pulls `seal` in from
+# another repo still gets its own private build cache, with nothing to
+# configure here or in the action.
 
 
 def cached_docker_build(ref, context, dockerfile='Dockerfile', target=None, live_update=[], registry=None, **kwargs):

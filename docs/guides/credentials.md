@@ -309,7 +309,7 @@ CI-specific, and neither names your store:
 
 **Installing and authenticating the provider's CLI**, once per job, before
 `seal ci` runs. The `ci` action takes a `provider_setup` script
-for this, and one `provider_token` secret that reaches it as
+for this, and one `provider_token` input that reaches it as
 `$SEAL_PROVIDER_TOKEN`. What that token opens, and which store, is
 your project's business:
 
@@ -317,8 +317,7 @@ your project's business:
 provider_setup: |
   curl -fsSL https://example.invalid/install.sh | bash
   echo "$SEAL_PROVIDER_TOKEN" | its-cli login
-secrets:
-  provider_token: ${{ secrets.WHATEVER_IT_CALLS_ITS_TOKEN }}
+provider_token: ${{ secrets.WHATEVER_IT_CALLS_ITS_TOKEN }}
 ```
 
 Set the secret on the **GitHub Environment** the job binds to (**Settings →
@@ -326,10 +325,10 @@ Environments → `<name>` → Secrets**), not as a repository secret -- one per
 environment, each scoped to only what that environment should read.
 
 :::{warning}
-The passthrough matters as much as the value. A reusable-workflow job
-resolves an Environment-scoped secret only if the caller names it in its own
-`secrets:` block -- omit it and the value silently arrives empty even with
-the secret correctly set.
+The `environment:` matters as much as the value. `secrets.X` above is read
+in **your** job, so a job that binds no Environment resolves it at
+repository scope and the value silently arrives empty even with the
+Environment secret correctly set.
 :::
 
 Promoting to production still requires clearing GitHub's own Environment
