@@ -31,6 +31,10 @@ CONFIG_TILTFILE = REPO_ROOT / "tilt" / "seal" / "config.Tiltfile"
 # uses to separate its own arguments from a Tiltfile's config flags.
 SEAL_CI = "seal ci --"
 
+# The step that runs the shape a merge rests on, named so the tests below
+# reach it by something stabler than a prefix of its prose.
+PRIMARY_RUN = "Verify the promises, and each service's own tests"
+
 
 def _caller_with() -> dict:
     """What the worked caller passes the action -- on the step that uses it,
@@ -59,8 +63,8 @@ def _run_scripts() -> list[str]:
     return [step["run"] for step in _steps() if "run" in step]
 
 
-def _seal_ci_invocations() -> list[list[str]]:
-    """Every `seal ci` the file runs, as the config flags it passes.
+def _invocations_in(script: str) -> list[list[str]]:
+    """Every `seal ci` one script runs, as the config flags it passes.
 
     Line continuations are folded first: an invocation is written across
     several lines to stay readable, and the flags on the later ones are as
@@ -68,12 +72,21 @@ def _seal_ci_invocations() -> list[list[str]]:
     runs it, so a line merely naming the command -- a log group's label, a
     comment quoting what is about to run -- is not read as one."""
     invocations = []
-    for script in _run_scripts():
-        for line in script.replace("\\\n", " ").splitlines():
-            if not re.search(r"\buvx\b.*" + re.escape(SEAL_CI), line):
-                continue
-            invocations.append(shlex.split(line.split(SEAL_CI, 1)[1]))
+    for line in script.replace("\\\n", " ").splitlines():
+        if not re.search(r"\buvx\b.*" + re.escape(SEAL_CI), line):
+            continue
+        invocations.append(shlex.split(line.split(SEAL_CI, 1)[1]))
     return invocations
+
+
+def _seal_ci_invocations() -> list[list[str]]:
+    return [i for script in _run_scripts() for i in _invocations_in(script)]
+
+
+def _gate_step() -> dict:
+    """The run on `k8s_overlay` -- the one a project's own local loop
+    reproduces, and the only one that can execute a service's own tests."""
+    return next(step for step in _steps() if step["name"] == PRIMARY_RUN)
 
 
 def _defined_flags() -> set[str]:
@@ -118,6 +131,76 @@ def test_further_shapes_are_optional_and_a_project_has_none_by_default(inputs):
     file's."""
     assert inputs["additional_k8s_overlays"]["required"] is False
     assert yaml.safe_load(inputs["additional_k8s_overlays"]["default"]) == []
+
+
+def test_a_project_chooses_whether_the_service_tests_run(inputs):
+    """Running them is the default, and the run on `k8s_overlay` is the only
+    one that can: a suite runs inside the service's container, so it is there
+    only in images built at --build_type test."""
+    assert inputs["run_service_tests"]["required"] is False
+    assert inputs["run_service_tests"]["default"] == "true"
+    # No `type:`: an action's inputs are strings, and this one is compared
+    # against the two words it takes rather than read for truthiness.
+    assert "type" not in inputs["run_service_tests"]
+
+
+def test_a_project_chooses_whether_the_promises_are_read(inputs):
+    """Reading them is the default, because that is what makes a run the
+    merge gate. A project turning them off gets each service's own tests and
+    the readiness gate -- a faster check to have beside the gate, never one
+    to have instead of it."""
+    assert inputs["run_outcomes"]["required"] is False
+    assert inputs["run_outcomes"]["default"] == "true"
+    # No `type:`: an action's inputs are strings, and this one is compared
+    # against the two words it takes rather than read for truthiness.
+    assert "type" not in inputs["run_outcomes"]
+
+
+@pytest.mark.parametrize("switch", ["run_service_tests", "run_outcomes"])
+def test_a_value_the_action_does_not_know_is_refused(switch):
+    """Checked against both words rather than against "true" alone. Anything
+    a run does not recognise would otherwise read as "not true" and switch
+    that half off -- and the direction that verifies less must never be the
+    one a typo takes."""
+    plan = next(step for step in _steps() if step.get("id") == "plan")
+
+    # The membership check itself, not the message it prints: an allow-list
+    # of the two words is the property, and a message can be reworded.
+    assert 'value not in ("true", "false")' in plan["run"]
+    assert 'switch("{}")'.format(switch) in plan["run"]
+
+
+def test_a_run_can_read_neither_half_and_gate_on_readiness_alone():
+    """Both halves off is allowed on purpose -- the emergency where the
+    question is only whether the thing comes up. The run is not refused, it
+    says out loud what it is, and the results a caller is handed do not claim
+    it produced nothing: an absence of reports by design is not the same
+    thing as a run that lost them, and only this file knows which it is."""
+    plan = next(step for step in _steps() if step.get("id") == "plan")
+    assert "both false" not in plan["run"]
+
+    gate = _gate_step()
+    assert "::warning::" in gate["run"]
+    assert "gates on readiness alone" in gate["run"]
+
+    collect = next(step for step in _steps() if step.get("id") == "collect")
+    # Named to `seal _tests-results` only when something was asked of it: a
+    # results directory that is not there is rendered as a failure, which is
+    # the right reading for a run that died and the wrong one for this.
+    assert '[ "$RUN_SERVICE_TESTS" = "true" ] || [ "$RUN_OUTCOMES" = "true" ]' in collect["run"]
+    assert "results={}" in collect["run"]
+
+
+def test_further_shapes_with_the_promises_off_is_refused():
+    """An additional shape is verified at --build_type runtime, whose images
+    carry no test suite -- so the promises are the only thing such a run
+    reads, and with them off it would spend a whole cluster asserting
+    nothing. Refused rather than quietly dropped: which of the two inputs the
+    caller meant is not this file's to guess."""
+    plan = next(step for step in _steps() if step.get("id") == "plan")
+
+    assert "additional_k8s_overlays names" in plan["run"]
+    assert "run_outcomes is false" in plan["run"]
 
 
 def test_publishing_is_asked_for_rather_than_inferred(inputs):
@@ -193,19 +276,31 @@ def test_the_gate_runs_a_shape_and_says_which():
         assert "k8s_overlay" in _flags_passed(invocation)
 
 
-def test_one_run_builds_test_images_and_the_additional_ones_do_not():
-    """The primary overlay's run is the only one that executes a service's
-    own tests, because it is the only one building images that carry a suite.
-    An additional shape runs the promises against what a real environment
-    runs -- a property of those images, not a policy."""
-    build_types = [
-        invocation[invocation.index("--build_type") + 1]
-        for invocation in _seal_ci_invocations()
-        if "--build_type" in invocation
-    ]
+def test_only_the_primary_run_can_build_test_images():
+    """The run on `k8s_overlay` is the only one that executes a service's own
+    tests, because it is the only one that can build images carrying a suite.
+    Every other run verifies what a real environment runs -- a property of
+    those images, not a policy -- so `runtime` is written into them, while
+    the primary one picks from `run_service_tests`."""
+    gate = _gate_step()
+    assert len(_invocations_in(gate["run"])) == 1
 
-    assert build_types.count("test") == 1
-    assert set(build_types) == {"test", "runtime"}
+    # Chosen in the shell rather than written into the command: which kind of
+    # image this run builds *is* the whole of whether a service's tests run,
+    # so a literal here would be the choice made in the wrong place.
+    assert '--build_type "$build_type"' in gate["run"]
+    assert "build_type=test" in gate["run"]
+    assert "build_type=runtime" in gate["run"]
+
+    others = [
+        invocation
+        for step in _steps()
+        if step["name"] != PRIMARY_RUN
+        for invocation in _invocations_in(step.get("run", ""))
+    ]
+    assert others, "the primary run is the only one there is"
+    for invocation in others:
+        assert invocation[invocation.index("--build_type") + 1] == "runtime"
 
 
 def test_only_the_publishing_run_publishes_and_it_reads_no_promises():
@@ -223,7 +318,27 @@ def test_only_the_publishing_run_publishes_and_it_reads_no_promises():
 
     assert gates, "every run publishes, so none of them is a gate"
     for gate in gates:
+        # Never a literal value on a gate: reading the promises is what being
+        # a gate means, so the only thing a gate has to say about them is
+        # that this run does not read them -- and that comes from the
+        # `run_outcomes` input, through the shell below, rather than from a
+        # word written into the command.
         assert "run_outcomes" not in _flags_passed(gate)
+
+
+def test_the_gate_says_run_outcomes_only_to_turn_them_off():
+    """The run on `k8s_overlay` is the one a project can ask to skip the
+    promises, and it asks through the input rather than through a second
+    invocation somebody could get out of step with this one."""
+    gate = _gate_step()
+
+    assert gate["env"]["RUN_SERVICE_TESTS"] == "${{ inputs.run_service_tests }}"
+    assert gate["env"]["RUN_OUTCOMES"] == "${{ inputs.run_outcomes }}"
+    assert "--run_outcomes false" in gate["run"]
+    # Compared against the word, not read for truthiness -- and against the
+    # one that turns them off, so the value the plan step let through decides
+    # this rather than the shell's idea of false.
+    assert '"$RUN_OUTCOMES" = "false"' in gate["run"]
 
 
 def test_publishing_waits_for_every_gate_to_have_passed():
