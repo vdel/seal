@@ -199,12 +199,12 @@ which the extension turns into the one value the `playwright` runner's
 generated config takes, and refuses the pair that would record a pass and
 discard a failure.
 
-A promise that broke also gets its recording published under an address of
-its own -- one unarchived artifact per failure, named after the promise, so
-a report can link the video instead of the archive holding it. A file inside
-an artifact has no URL; an artifact does. Five per run at most, since a
-composite action cannot loop an upload step, and `publish_recordings: false`
-turns it off.
+Whatever recording a promise left is also published under an address of its
+own -- one unarchived artifact per promise, named after it, so a report can
+link the video instead of the archive holding it. A file inside an artifact
+has no URL; an artifact does. Broken promises first, five per run at most
+(a composite action cannot loop an upload step), and `publish_recordings:
+false` turns it off.
 
 What it renders rather than publishes is the results artifact's own page:
 `seal _report` writes a self-contained `index.html` and a `report.md` beside

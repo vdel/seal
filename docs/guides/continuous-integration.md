@@ -225,13 +225,17 @@ reported as passed. `failed` carries which case gave way, where that
 promise's runner also wrote a JUnit report -- detail beside the verdict, not
 the verdict itself, which is the file the runner wrote.
 
-`evidence` is what a promise that did **not** hold left behind to look at,
-each `path` relative to that run's own results and so a path inside the
-artifact once the run's name is prefixed. `kind` is `video`, `image`,
-`trace`, `page` or `log`, classified by what opening the file does -- a
-runner writes whatever it writes, so this is not a list of names any runner
-was told to produce. The key is absent where a promise recorded nothing, and
-never present for one that passed.
+`evidence` is what a promise left behind to look at, each `path` relative to
+that run's own results and so a path inside the artifact once the run's name
+is prefixed. `kind` is `video`, `image`, `trace`, `page` or `log`, classified
+by what opening the file does -- a runner writes whatever it writes, so this
+is not a list of names any runner was told to produce.
+
+A promise that did **not** hold carries everything it left; one that
+**held** carries its recording and nothing else, since a log and a report
+per kept promise would bury the one that broke. The key is absent where
+there is nothing -- which is every kept promise unless
+`record_outcome_video_on_success` asked for a recording.
 
 `read` is `false` when the run was not asked to read the promises at all
 (`run_outcomes: false`). `promises` is then empty and `passed` is `true` --
@@ -318,9 +322,9 @@ looking through.
 | | |
 | --- | --- |
 | How many | Five per run, at most. A composite action can't loop an upload step and a run doesn't know how many promises broke until it has finished, so the number of addresses is fixed. Past that, the recordings are still in the results artifact. |
-| Which files | The videos, one per broken promise. Screenshots, logs and traces stay with the results, where the page shows them together. |
+| Which files | The videos, one per promise that left one -- broken promises first, so the addresses go where somebody is looking. A kept promise has no recording unless `record_outcome_video_on_success` asked for one, which is how a project turning that on sees that it worked. |
 | What it costs | One upload per broken promise, and the recording's bytes travelling twice — it stays in the results artifact too, since that is where the page that plays it lives. `publish_recordings: false` keeps the page and skips the uploads. |
-| On a green run | Nothing. There is no recording to publish, so no upload happens and the comment has no link to make. |
+| On a green run | Nothing, by default -- no recording exists, so no upload happens and the comment has no link to make. With `record_outcome_video_on_success` on, the kept promises' recordings are published and appear in the run's artifact list. |
 
 ### One comment, updated in place
 

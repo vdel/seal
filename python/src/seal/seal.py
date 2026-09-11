@@ -595,18 +595,30 @@ def _rendered_outcomes(
 def _rendered_evidence(results_root: Path, result: OutcomeResult) -> dict:
     """What this promise left behind to open, where it left anything.
 
-    Only for a promise that is not passing: `retain-on-failure` is what
-    every runner seal supplies records under, so a promise that held has
-    nothing to show, and listing its log alongside would bury the one that
-    does.
+    A promise this run did not see kept is reported with everything it
+    left: the recording, the screenshot, the log, the runner's own report.
+    That is what somebody has to work through.
+
+    A promise that held is reported with its recording and nothing else. A
+    project can ask for one (record_outcome_video_on_success, see
+    tilt/seal/config.Tiltfile) precisely so it can watch a suite that
+    passes -- and a project that did not ask has no recording here, so this
+    says nothing on a green run. What is left out either way is the log and
+    the report: a line of those per kept promise would bury the one promise
+    that broke.
+
+    Nothing at all for a promise with no test yet: there was no run to
+    record.
 
     The key is absent rather than empty where there is nothing, so a reader
     can tell a promise that recorded nothing from one nobody looked for a
     recording from.
     """
-    if result.state == PASSED or result.state == UNTRANSLATED:
+    if result.state == UNTRANSLATED:
         return {}
     found = evidence_in(result.results_dir)
+    if result.state == PASSED:
+        found = [(kind, path) for kind, path in found if kind in RECORDING_KINDS]
     if not found:
         return {}
     return {
@@ -2203,9 +2215,16 @@ def _recordings_to_publish(runs: dict) -> list[dict]:
     """What a pipeline should give an address of its own, in the order a
     reader wants them.
 
-    One per promise this run did not see kept, and only the first recording
-    it left: a second angle on the same failure is not what somebody is
-    missing, and every published recording costs an upload.
+    One per promise that left a recording, and only the first it left: a
+    second angle on the same run is not what somebody is missing, and every
+    published recording costs an upload.
+
+    Whether a promise held decides the *order*, not whether it is here. A
+    broken promise's recording is what somebody is looking for, so those
+    come first and the cap spends itself on them; a kept promise's is there
+    for a project that asked to record its passes, which is how such a
+    project sees that it worked. A project that did not ask has no recording
+    on a kept promise and publishes nothing extra.
 
     Each entry carries the `key` the rendering will look the result up under,
     the `path` inside the run's results, and the `name` to publish it as.
@@ -2213,11 +2232,15 @@ def _recordings_to_publish(runs: dict) -> list[dict]:
     because what a runner called it is `video.webm` for every promise in the
     tree -- and a pipeline that publishes each under its own name needs those
     to differ, while somebody reading a list of them needs to know which
-    promise broke.
+    promise it belongs to.
     """
     published = []
     for name, run in runs.items():
-        for promise in reporting.failed_promises(run):
+        broken = reporting.failed_promises(run)
+        ordered = broken + [
+            promise for promise in reporting.promises(run) if promise not in broken
+        ]
+        for promise in ordered:
             recording = next(
                 (
                     item

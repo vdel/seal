@@ -463,8 +463,12 @@ def _html_evidence(run_name: str, promise: dict) -> str:
     A video is embedded rather than linked, because the page is read from an
     extracted artifact with the recording sitting beside it -- and what a red
     browser test costs somebody is working out what the browser actually did.
-    `preload="none"`, so a page listing six failures fetches nothing until
+    `preload="none"`, so a page listing six recordings fetches nothing until
     somebody presses play.
+
+    A promise that held gets its player too, where a project asked for one:
+    watching a suite pass is how somebody finds out it passes through the
+    wrong page.
 
     Everything else is a link. Relative, for the same reason: these paths are
     inside the artifact this page travels in, and an absolute one would name

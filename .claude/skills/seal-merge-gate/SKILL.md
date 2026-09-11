@@ -189,10 +189,10 @@ the artifact. `kind` is `video`, `image`, `trace`, `page` or `log`. The
 promise has one and a green one has nothing to show. The rendered
 `index.html` plays them where they sit.
 
-A file inside a CI artifact has no address of its own, so each broken
-promise's recording is *also* uploaded as an unarchived artifact of its own,
-named after the promise -- five per run at most, since the uploads are
-unrolled. `actions/ci`'s `recordings` output says where each went, and the
+A file inside a CI artifact has no address of its own, so each promise's
+recording is *also* uploaded as an unarchived artifact of its own, named
+after the promise -- broken promises first, five per run at most, since the
+uploads are unrolled. `actions/ci`'s `recordings` output says where each went, and the
 `report` action turns that into a "watch this failure" link per promise.
 `publish_recordings: false` skips those uploads and keeps the page.
 

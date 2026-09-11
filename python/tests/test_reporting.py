@@ -798,14 +798,52 @@ def test_only_a_recording_is_published_and_only_one_per_promise(tmp_path, capsys
     assert published[0]["path"].endswith("video.webm")
 
 
-def test_a_promise_that_held_publishes_nothing(tmp_path, capsys):
-    """Nothing broke, so there is nothing to watch -- and an upload per green
-    promise is a cost paid on every passing pull request."""
+def test_a_promise_that_held_and_recorded_nothing_publishes_nothing(tmp_path, capsys):
+    """The default: a kept promise has no recording, so no upload happens and
+    no green pull request pays for one. Its log is not a recording."""
     tree(tmp_path)
-    promise(tmp_path, "kept", verdict=VERDICT_PASSED, recorded=("artifacts/x/video.webm",))
+    promise(tmp_path, "kept", verdict=VERDICT_PASSED, recorded=("log.txt",))
     write(tmp_path / DEFAULT_RESULTS_DIR_NAME / "api" / "junit.xml", service_report(PASSING))
 
     assert _publish_list(tmp_path, capsys, tmp_path / "out") == []
+
+
+def test_a_promise_that_held_and_was_recorded_is_published(tmp_path, capsys):
+    """A project asks to record its passes in order to watch them -- a test
+    can pass through the wrong page. Publishing only failures would leave
+    that project having turned a switch on and seeing nothing for it."""
+    tree(tmp_path)
+    promise(
+        tmp_path, "kept", verdict=VERDICT_PASSED, recorded=("artifacts/x/video.webm",)
+    )
+
+    [entry] = _publish_list(tmp_path, capsys, tmp_path / "out")
+
+    assert entry["name"] == "dev--ui--todo-list--kept.webm"
+
+
+def test_a_broken_promise_gets_an_address_before_a_kept_one(tmp_path, capsys):
+    """Whether a promise held decides the order, not whether it is
+    published. There are only so many addresses a run can hand out, and the
+    recording somebody is looking for is the one for the promise that
+    broke."""
+    tree(tmp_path)
+    for index in range(MAX_PUBLISHED_RECORDINGS):
+        promise(
+            tmp_path,
+            "kept-{}".format(index),
+            verdict=VERDICT_PASSED,
+            recorded=("artifacts/x/video.webm",),
+        )
+    promise(
+        tmp_path, "zzz-broken", verdict=VERDICT_FAILED, recorded=("artifacts/x/video.webm",)
+    )
+
+    published = _publish_list(tmp_path, capsys, tmp_path / "out")
+
+    assert len(published) == MAX_PUBLISHED_RECORDINGS
+    # Named last in the tree, and still first to get an address.
+    assert published[0]["key"] == "dev/ui/todo-list/zzz-broken"
 
 
 def test_no_more_are_named_than_a_pipeline_can_publish(tmp_path, capsys):

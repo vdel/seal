@@ -192,6 +192,13 @@ well, because that is where the page that plays it lives, and a page that
 linked out to a separate artifact per video would be a page that only works
 online. `publish_recordings: false` keeps the page and skips the uploads.
 
+Whether a promise held decides which address it gets, not whether it gets
+one. A broken promise's recording is what somebody is looking for, so those
+are published first and the cap spends itself on them. A kept promise's is
+published after them, because a project only has one where it asked to
+record its passes -- and a project that turns that on in order to watch a
+green suite would otherwise turn a switch on and see nothing for it.
+
 What the comment still names, rather than links, is everything else a
 failure left: the screenshot, the log, the runner's own report. Those are
 read beside a report rather than watched, and the page shows them together
