@@ -148,6 +148,7 @@ enumerates them and never goes stale against them.
 | `project_dir` | Path from the repository root to the project's root Tiltfile and services. Required. |
 | `k8s_overlay` | Which overlay the gate deploys. Its run also executes each service's own tests, so it should be the shape the local loop brings up. Required. |
 | `additional_k8s_overlays` | Further overlays to verify the promises against, as a JSON list -- `'["prod-like"]'`. Each runs the outcome suite alone, against runtime images. Empty by default. |
+| `run_outcomes` | Whether these runs read the promises -- `true` or `false`, `true` by default. Off, the run is each service's own tests and the readiness gate and nothing more, which is a check to have beside the merge gate rather than as it. It leaves `additional_k8s_overlays` nothing to verify, so naming both is refused. |
 | `publish_images` | Whether to push the images built, once every gate has passed. Required. |
 | `publish_k8s_overlay` | Which overlay the publishing run deploys. Required whenever `publish_images` is true; the run fails saying so rather than guessing. |
 | `ref` | Branch or SHA to check out. Defaults to the triggering ref. |

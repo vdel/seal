@@ -8,7 +8,9 @@ description: >
 # tests inside its running container -- run the project's outcome suite
 # against the environment that just came up, and hand back what every run
 # found. So a green run means two things: the environment came up, and every
-# promise the project has translated still holds.
+# promise the project has translated still holds. A project can ask for only
+# the first half -- `run_outcomes: false`, below -- which is a faster check to
+# have beside the gate rather than a gate of its own.
 #
 # What makes that a usable merge gate is `seal ci` exiting successfully only
 # once *every* resource is ready -- so it refuses to start at all until each
@@ -63,6 +65,25 @@ inputs:
       whether to have one is the project's call.
     required: false
     default: '[]'
+  run_outcomes:
+    description: >
+      Whether these runs read the project's promises -- "true" or "false",
+      true by default. Turned off, what is left is each service's own
+      tests, run inside its container by the run on `k8s_overlay`, and the
+      readiness every `seal ci` gates on.
+
+      A run with this off is not the merge gate. It says the environment
+      comes up and each service's own suite passes, and nothing at all
+      about whether the application still does what it promises -- so it
+      is worth having beside the gate, as the faster of two checks, and
+      never instead of it.
+
+      It also leaves `additional_k8s_overlays` nothing to do: those runs
+      build images that carry no test suite, so the promises are the only
+      thing they read. Asking for both is refused rather than deploying
+      shapes that would assert nothing.
+    required: false
+    default: 'true'
   publish_images:
     description: >
       Whether to push the images this project builds, after every gate
@@ -258,24 +279,37 @@ runs:
       # internal-seal-tests.yml installs only uv.
       uses: astral-sh/setup-uv@v8.1.0
 
-    - name: Plan the overlays this run verifies
+    - name: Plan what this run verifies
       id: plan
       # Early, and before anything that can fail on a slow network: the
       # `overlays` output is what a caller reports per shape from, and a job
       # that died before saying which shape it was running leaves nothing to
-      # report under.
+      # report under. The same goes for a combination of inputs that asks for
+      # nothing coherent -- better said here, in one line naming the inputs,
+      # than after twenty minutes of cluster.
       #
       # Parsed rather than pasted through: a malformed
-      # additional_k8s_overlays should say so here, in one line naming the
-      # input, rather than reaching a shell loop as a `[` and being verified
-      # as an overlay by that name.
+      # additional_k8s_overlays should say so here rather than reaching a
+      # shell loop as a `[` and being verified as an overlay by that name.
+      # And run_outcomes is checked against the two words it takes, so a
+      # third one is refused instead of reading as "not true" -- turning the
+      # promises off is a thing a run says, never something a typo does.
       env:
         PRIMARY_K8S_OVERLAY: ${{ inputs.k8s_overlay }}
         ADDITIONAL_K8S_OVERLAYS: ${{ inputs.additional_k8s_overlays }}
+        RUN_OUTCOMES: ${{ inputs.run_outcomes }}
       shell: bash
       run: |
         uv run --no-project python - <<'PY' >> "$GITHUB_OUTPUT"
         import json, os, sys
+
+        run_outcomes = os.environ["RUN_OUTCOMES"].strip()
+        if run_outcomes not in ("true", "false"):
+            sys.exit(
+                "run_outcomes must be \"true\" or \"false\", got {!r}.".format(
+                    run_outcomes
+                )
+            )
 
         raw = os.environ["ADDITIONAL_K8S_OVERLAYS"].strip() or "[]"
         try:
@@ -289,6 +323,17 @@ runs:
             sys.exit(
                 "additional_k8s_overlays must be a JSON list of strings, got "
                 "{!r}.".format(raw)
+            )
+
+        if additional and run_outcomes == "false":
+            sys.exit(
+                "additional_k8s_overlays names {} and run_outcomes is false. An "
+                "additional shape is verified at --build_type runtime, whose "
+                "images carry no test suite, so the promises are the only thing "
+                "such a run reads -- with them off it would deploy a shape to "
+                "assert nothing. Clear one input or the other.".format(
+                    ", ".join(additional)
+                )
             )
 
         print("overlays=" + json.dumps([os.environ["PRIMARY_K8S_OVERLAY"]] + additional))
@@ -467,6 +512,9 @@ runs:
         # Tilt's plain docker_build(). Local `tilt up` never sets this.
         SEAL_BUILDX_CACHE: "1"
         K8S_OVERLAY: ${{ inputs.k8s_overlay }}
+        # One of two words by the time it gets here -- the plan step above
+        # refuses anything else.
+        RUN_OUTCOMES: ${{ inputs.run_outcomes }}
       shell: bash
       run: |
         # `seal ci` runs `tilt ci` against this project's own, checked-in
@@ -480,10 +528,20 @@ runs:
         # that executes a service's own tests -- which is also what makes
         # this overlay part of their contract, since it decides the database
         # they connect to and the Secret their .env resolved into.
+        #
+        # The promises are read because this is a gate, so the flag appears
+        # only to say they are not: a run asking for them has nothing to
+        # pass, and one that leaves them out is still a `seal ci` somebody
+        # can type -- with each service's own tests and the readiness gate,
+        # and no claim about what the application promises.
+        outcomes=()
+        if [ "$RUN_OUTCOMES" = "false" ]; then
+          outcomes=(--run_outcomes false)
+        fi
         "$RUNNER_TEMP/fresh-cluster.sh"
         status=0
         uvx --from ${{ github.action_path }}/../../python seal ci -- \
-          --k8s_overlay "$K8S_OVERLAY" --build_type test || status=$?
+          --k8s_overlay "$K8S_OVERLAY" --build_type test "${outcomes[@]}" || status=$?
         mkdir -p "$RUNNER_TEMP/seal-results"
         if [ -d tests-results ]; then
           mv tests-results "$RUNNER_TEMP/seal-results/$K8S_OVERLAY"

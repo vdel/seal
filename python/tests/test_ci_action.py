@@ -120,6 +120,43 @@ def test_further_shapes_are_optional_and_a_project_has_none_by_default(inputs):
     assert yaml.safe_load(inputs["additional_k8s_overlays"]["default"]) == []
 
 
+def test_a_project_chooses_whether_the_promises_are_read(inputs):
+    """Reading them is the default, because that is what makes a run the
+    merge gate. A project turning them off gets each service's own tests and
+    the readiness gate -- a faster check to have beside the gate, never one
+    to have instead of it."""
+    assert inputs["run_outcomes"]["required"] is False
+    assert inputs["run_outcomes"]["default"] == "true"
+    # No `type:`: an action's inputs are strings, and this one is compared
+    # against the two words it takes rather than read for truthiness.
+    assert "type" not in inputs["run_outcomes"]
+
+
+def test_a_run_outcomes_value_the_action_does_not_know_is_refused():
+    """Checked against both words rather than against "true" alone. Anything
+    a run does not recognise would otherwise read as "not true" and turn the
+    promises off -- and the direction that verifies less must never be the
+    one a typo takes."""
+    plan = next(step for step in _steps() if step.get("id") == "plan")
+
+    # The membership check itself, not the message it prints: an allow-list
+    # of the two words is the property, and a message can be reworded.
+    assert 'run_outcomes not in ("true", "false")' in plan["run"]
+    assert "run_outcomes must be" in plan["run"]
+
+
+def test_further_shapes_with_the_promises_off_is_refused():
+    """An additional shape is verified at --build_type runtime, whose images
+    carry no test suite -- so the promises are the only thing such a run
+    reads, and with them off it would spend a whole cluster asserting
+    nothing. Refused rather than quietly dropped: which of the two inputs the
+    caller meant is not this file's to guess."""
+    plan = next(step for step in _steps() if step.get("id") == "plan")
+
+    assert "additional_k8s_overlays names" in plan["run"]
+    assert "run_outcomes is false" in plan["run"]
+
+
 def test_publishing_is_asked_for_rather_than_inferred(inputs):
     """A boolean of its own, and required: inferring it from an overlay name
     is what makes deploying a production-shaped overlay on a throwaway
@@ -223,7 +260,30 @@ def test_only_the_publishing_run_publishes_and_it_reads_no_promises():
 
     assert gates, "every run publishes, so none of them is a gate"
     for gate in gates:
+        # Never a literal value on a gate: reading the promises is what being
+        # a gate means, so the only thing a gate has to say about them is
+        # that this run does not read them -- and that comes from the
+        # `run_outcomes` input, through the shell below, rather than from a
+        # word written into the command.
         assert "run_outcomes" not in _flags_passed(gate)
+
+
+def test_the_gate_says_run_outcomes_only_to_turn_them_off():
+    """The run on `k8s_overlay` is the one a project can ask to skip the
+    promises, and it asks through the input rather than through a second
+    invocation somebody could get out of step with this one."""
+    gate = next(
+        step
+        for step in _steps()
+        if step.get("name", "").startswith("Verify the promises, and each service")
+    )
+
+    assert gate["env"]["RUN_OUTCOMES"] == "${{ inputs.run_outcomes }}"
+    assert "--run_outcomes false" in gate["run"]
+    # Compared against the word, not read for truthiness -- and against the
+    # one that turns them off, so the value the plan step let through decides
+    # this rather than the shell's idea of false.
+    assert '"$RUN_OUTCOMES" = "false"' in gate["run"]
 
 
 def test_publishing_waits_for_every_gate_to_have_passed():

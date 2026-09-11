@@ -89,6 +89,7 @@ repository, so the CLI is already beside it, at the revision `<ref>` names.
 | `project_dir` | yes | Path, relative to the repository root, to the project's root Tiltfile and services. |
 | `k8s_overlay` | yes | Which of your Kubernetes overlays the gate deploys. The run against this one also executes each service's own tests, so name the shape you bring up locally -- a gate on a shape nobody can reproduce is one nobody can act on. |
 | `additional_k8s_overlays` | no | Further overlays to verify your promises against, as a JSON list -- `'["prod-like"]'`. Each runs the outcome suite alone, against the images a real environment runs. Empty by default. |
+| `run_outcomes` | no | Whether these runs read your promises -- `true` or `false`, `true` by default. Turned off, what is left is each service's own tests and the readiness gate: a faster check to have *beside* the gate, never one to have instead of it. It also leaves `additional_k8s_overlays` nothing to verify, so naming both is refused. |
 | `publish_images` | yes | Whether to push the images built, once every gate above has passed. |
 | `publish_k8s_overlay` | when publishing | Which overlay the publishing run deploys. Publishing means deploying and letting Tilt push what it built, so it still names a shape -- the one the deployment will use. |
 | `ref` | no | Branch or SHA to check out. Defaults to the triggering ref. |
@@ -289,7 +290,8 @@ same revision.
 6. Runs the gate on `k8s_overlay`: `uvx --from <the action's own python/> seal ci --
    --k8s_overlay <k8s_overlay> --build_type test`. This is the run that also
    executes each service's own tests, because `test` is the build kind whose
-   images carry them.
+   images carry them. With `run_outcomes: false` it appends `--run_outcomes
+   false`, which leaves exactly those tests and the readiness gate.
 7. Runs the gate again on each of `additional_k8s_overlays`, at
    `--build_type runtime` -- the images a real environment runs, which carry
    no test suite, so these runs verify the promises alone.
