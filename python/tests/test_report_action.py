@@ -81,6 +81,23 @@ def test_the_results_are_what_it_renders_and_they_are_required():
     )
 
 
+def test_where_the_recordings_live_reaches_the_rendering():
+    """The comment names the path of a recording a failure left behind, and
+    a path inside a CI artifact is not something anybody can click. Linking
+    the archive is the whole of what a comment can do about that, so the
+    caller's artifact URL has to reach the renderer."""
+    inputs = _action()["inputs"]
+    render = next(step for step in _steps() if step["name"] == "Render what the run found")
+
+    assert inputs["artifact_url"]["required"] is False
+    # Optional, and rendered as nothing: a run that uploaded no artifact
+    # reports its URL as empty, and the paths alone are still what somebody
+    # needs to find the files.
+    assert inputs["artifact_url"]["default"] == ""
+    assert render["env"]["SEAL_ARTIFACT_URL"] == "${{ inputs.artifact_url }}"
+    assert "--artifact-url" in render["run"]
+
+
 def test_the_comment_and_the_summary_can_each_be_turned_off():
     """Which of them a project wants is the project's. A page nobody asked
     for on every pull request is exactly the inheritance the boundary

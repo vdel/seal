@@ -176,6 +176,7 @@ from seal.outcome_suite import (
     NO_VERDICT,
     OUTCOMES_RESULTS_SUBDIR,
     PASSED,
+    evidence_in,
     UNCONFIRMED,
     UNTRANSLATED,
     VERDICT_FILENAME,
@@ -377,6 +378,16 @@ def cmd_tests_verdict(args: list[str]) -> int:
 # alongside, so a capped listing is never readable as a shorter one.
 MAX_RENDERED_FAILURES = 50
 
+# How many files one promise contributes to a report as something to open. A
+# browser-driven test that failed leaves a recording, a screenshot and a log,
+# which is the set somebody wants; a suite that left two hundred files behind
+# has said everything it has to say in the first few, and the rest is a
+# listing nobody reads. Reported only for a promise that is not passing --
+# every runner seal supplies records on failure, so a green promise has
+# nothing to show and a listing of its log per promise would bury the one
+# that does.
+MAX_RENDERED_EVIDENCE = 12
+
 
 def cmd_tests_results(args: list[str]) -> int:
     """Internal: what every run of a pipeline found, as JSON on stdout.
@@ -554,9 +565,42 @@ def _rendered_outcomes(
                 ]
                 if result.state == FAILED
                 else [],
+                # Where the recording of what happened is, for a promise this
+                # run did not see kept. Relative to this run's own results
+                # root, which is what makes it a path inside the artifact the
+                # run uploads once the run's name is prefixed -- the reader
+                # of a report is looking at a download, and an absolute path
+                # from the machine that produced it names nothing there.
+                **_rendered_evidence(results_root, result),
             }
             for result in results
         ],
+    }
+
+
+def _rendered_evidence(results_root: Path, result: OutcomeResult) -> dict:
+    """What this promise left behind to open, where it left anything.
+
+    Only for a promise that is not passing: `retain-on-failure` is what
+    every runner seal supplies records under, so a promise that held has
+    nothing to show, and listing its log alongside would bury the one that
+    does.
+
+    The key is absent rather than empty where there is nothing, so a reader
+    can tell a promise that recorded nothing from one nobody looked for a
+    recording from.
+    """
+    if result.state == PASSED or result.state == UNTRANSLATED:
+        return {}
+    found = evidence_in(result.results_dir)
+    if not found:
+        return {}
+    return {
+        "evidence": [
+            {"kind": kind, "path": str((result.results_dir / path).relative_to(results_root))}
+            for kind, path in found[:MAX_RENDERED_EVIDENCE]
+        ],
+        "evidence_omitted": max(0, len(found) - MAX_RENDERED_EVIDENCE),
     }
 
 
@@ -627,6 +671,16 @@ def cmd_report(args: list[str]) -> int:
         help="the heading both renderings carry.",
     )
     parser.add_argument(
+        "--artifact-url",
+        default="",
+        help=(
+            "where the files the rendering names can be fetched. A file "
+            "inside a CI artifact has no address of its own, so the Markdown "
+            "points at the archive; the page inside it uses relative paths "
+            "and needs none."
+        ),
+    )
+    parser.add_argument(
         "--source",
         default="",
         help=(
@@ -668,7 +722,10 @@ def cmd_report(args: list[str]) -> int:
         )
     if parsed.markdown:
         Path(parsed.markdown).write_text(
-            reporting.render_markdown(runs, title=parsed.title), encoding="utf-8"
+            reporting.render_markdown(
+                runs, title=parsed.title, artifact_url=parsed.artifact_url
+            ),
+            encoding="utf-8",
         )
     return 0
 

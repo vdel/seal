@@ -184,6 +184,56 @@ def results_dir_for(results_root: Path, outcome: Outcome) -> Path:
     )
 
 
+# What a promise's own results directory holds that somebody would open, by
+# what opening it does. A runner writes whatever it writes -- seal has no
+# reading of it beyond the verdict (see /rfcs/0011-outcome-runners.md) -- so
+# this is a classification of file types rather than a list of filenames any
+# runner was told to produce. The `playwright` runner seal supplies leaves a
+# video and a screenshot behind on failure; a project's own runner leaves
+# whatever it leaves, and it is reported the same way.
+EVIDENCE_KINDS = (
+    ("video", (".webm", ".mp4")),
+    ("image", (".png", ".jpg", ".jpeg", ".gif", ".svg")),
+    ("trace", (".zip",)),
+    ("page", (".html",)),
+    ("log", (".txt", ".log")),
+)
+
+# The verdict and the JUnit report are not evidence: one is the answer the
+# suite already read and the other is where the answer's detail already came
+# from, both reported in their own right. Listing them again as "something to
+# open" would bury the recording that is actually new information.
+NOT_EVIDENCE = (VERDICT_FILENAME, "junit.xml")
+
+
+def evidence_in(results_dir: Path) -> list[tuple[str, Path]]:
+    """What came back with this promise that a person would open, as
+    (kind, path) with each path relative to `results_dir`.
+
+    Searched recursively and classified by suffix, because where inside its
+    own directory a runner writes a recording is the runner's business --
+    Playwright files per-test attachments under a directory it names itself,
+    and a project's own runner has no convention to follow at all.
+
+    Ordered by kind rather than by path: a reader opening one thing wants the
+    recording, and a listing in filesystem order buries it under whatever
+    happened to sort first.
+    """
+    if not results_dir.is_dir():
+        return []
+
+    ranked = {suffix: index for index, (_, suffixes) in enumerate(EVIDENCE_KINDS) for suffix in suffixes}
+    kinds = {suffix: kind for kind, suffixes in EVIDENCE_KINDS for suffix in suffixes}
+    found = [
+        (kinds[path.suffix.lower()], path.relative_to(results_dir))
+        for path in sorted(results_dir.rglob("*"))
+        if path.is_file()
+        and path.suffix.lower() in kinds
+        and path.name not in NOT_EVIDENCE
+    ]
+    return sorted(found, key=lambda entry: (ranked[Path(entry[1]).suffix.lower()], str(entry[1])))
+
+
 def read_verdict(results_dir: Path) -> str | None:
     """This outcome's verdict, or None where there isn't one to read.
 

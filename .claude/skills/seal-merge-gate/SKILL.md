@@ -158,6 +158,7 @@ enumerates them and never goes stale against them.
 | `submodules_token` | Read access for a private git submodule the checkout needs. `GITHUB_TOKEN` is scoped to the calling repository alone, so without it such a submodule fails to clone. Nothing about Seal needs it. |
 | `credentials_env` | Which of the project's credentials environments the run reads -- which store each `.env` reference resolves against. Reaches `seal ci` as `SEAL_CREDENTIALS_ENV`. Left empty, the project's own `default_env` applies. Independent of `k8s_overlay` by design. |
 | `results_artifact` | Name of the artifact the run uploads its results to; defaults to `tests-results`. A name has to be unique within a workflow run, so a repository using this action more than once names each use. |
+| `results_artifact_url` | Where that artifact can be downloaded -- what a comment links so somebody can reach a recording. Empty when nothing was uploaded. |
 | `results_retention_days` | How long that artifact is kept; defaults to 7. It exists for the caller's own reporting job to read in the same run. |
 
 ### What comes back
@@ -179,6 +180,14 @@ Each promise in `outcomes.promises` carries its `slug`, its prompt's
 `FAIL`, `no verdict` (it has a test and nothing knows whether it ran -- a
 failure), or `no test yet` (nothing translated from it -- not a failure).
 `outcomes.counts` counts them by state.
+
+A promise that did **not** hold also carries `evidence`: what it left behind
+to look at, each `path` relative to that run's results and so a path inside
+the artifact. `kind` is `video`, `image`, `trace`, `page` or `log`. The
+`playwright` runner records a video and a screenshot on failure, so a red
+promise has one and a green one has nothing to show. The rendered
+`index.html` plays them where they sit; a comment names the path and links
+the archive, because a file inside a CI artifact has no address of its own.
 
 `outcomes.read` is `false` where the run was asked not to read them
 (`run_outcomes: false`): `promises` is empty and nothing in the results is a

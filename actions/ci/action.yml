@@ -223,6 +223,13 @@ outputs:
   results_artifact:
     description: "The name this run uploaded its results under, so a caller downloading it names it once."
     value: ${{ inputs.results_artifact }}
+  results_artifact_url:
+    description: >
+      Where that artifact can be downloaded. A file inside it has no address
+      of its own -- the artifact is one archive -- so this is as close as a
+      report published outside the run can get to the recording of a failure.
+      Empty where nothing was uploaded.
+    value: ${{ steps.upload.outputs.artifact-url }}
 
 runs:
   using: composite
@@ -768,6 +775,7 @@ runs:
           --source "${{ github.repository }}@${{ github.sha }}"
 
     - name: Upload test results artifact
+      id: upload
       uses: actions/upload-artifact@v7
       if: (!cancelled())
       with:

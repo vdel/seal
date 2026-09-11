@@ -118,7 +118,10 @@ a `custom` runner is not writing the verdict file. Under a `tap` group it
 means no test point named that outcome -- the run stopped before reaching it,
 or the point carried a `# SKIP` or `# TODO`, neither of which establishes
 anything. Look in `tests-results/outcomes/<group>/<epic>/<outcome>/` and at
-the runner's logs, then re-read the runner contract in `seal-outcome`.
+the runner's logs, then re-read the runner contract in `seal-outcome`. A
+`playwright` group leaves a video and a screenshot in that directory for a
+promise it saw fail, which is the fastest way to tell a test asserting the
+wrong thing from an application that is genuinely broken.
 
 **An outcome is reported `no test yet` but the test is right there** -- the
 group's runner cannot start what is in the directory. Under `playwright`

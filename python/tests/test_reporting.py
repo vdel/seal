@@ -27,6 +27,7 @@ from seal.outcome_suite import (
     VERDICT_FILENAME,
     VERDICT_PASSED,
 )
+from seal.outcome_suite import evidence_in
 from seal.outcomes import QUARANTINE_FILENAME
 from seal.runners import CONFIG_FILENAME, PLAYWRIGHT, RUNNER_FIELD, TAP
 from seal.seal import MAX_RENDERED_FAILURES, main
@@ -60,6 +61,7 @@ def promise(
     quarantine: str = "",
     group: str = GROUP,
     junit: str | None = None,
+    recorded: tuple[str, ...] = (),
 ) -> Path:
     """One promise, and whatever its container left behind.
 
@@ -80,6 +82,11 @@ def promise(
         write(results / VERDICT_FILENAME, verdict + "\n")
     if junit is not None:
         write(results / "junit.xml", junit)
+    # What a runner left behind: paths relative to this promise's own
+    # results, since where inside them a runner writes a recording is the
+    # runner's business.
+    for relative in recorded:
+        write(results / relative, "")
     return directory
 
 
@@ -564,3 +571,167 @@ def test_results_that_are_not_a_reading_are_refused(body, tmp_path, capsys):
 
     assert main(["_report", "--results", str(reading), "--markdown", str(tmp_path / "r.md")]) == 1
     assert "Error" in capsys.readouterr().err
+
+
+# --- what a failure left behind to look at ---------------------------------
+
+
+def test_a_failure_reports_where_its_recording_is(tmp_path, capsys):
+    """What a red browser test costs somebody is working out what the browser
+    actually did. A recording answers that, and a report that did not say
+    where one was would leave it sitting in an artifact nobody opens."""
+    tree(tmp_path)
+    promise(
+        tmp_path,
+        "broken",
+        verdict=VERDICT_FAILED,
+        recorded=("artifacts/broken-chromium/video.webm", "log.txt"),
+    )
+
+    [promised] = read(tmp_path, capsys)["outcomes"]["promises"]
+
+    assert [(item["kind"], item["path"]) for item in promised["evidence"]] == [
+        ("video", "outcomes/ui/todo-list/broken/artifacts/broken-chromium/video.webm"),
+        ("log", "outcomes/ui/todo-list/broken/log.txt"),
+    ]
+
+
+def test_a_promise_that_held_is_not_a_listing_of_its_own_files(tmp_path, capsys):
+    """Every runner seal supplies records on failure, so a promise that held
+    has nothing to show -- and a log listed per passing promise would bury
+    the one recording somebody opened the report for."""
+    tree(tmp_path)
+    promise(tmp_path, "kept", verdict=VERDICT_PASSED, recorded=("log.txt",))
+
+    [promised] = read(tmp_path, capsys)["outcomes"]["promises"]
+
+    assert "evidence" not in promised
+
+
+def test_a_promise_that_left_no_verdict_still_reports_what_it_wrote(tmp_path, capsys):
+    """The state where a recording is worth most: nothing knows whether the
+    test ran, and whatever it managed to write before dying is the only thing
+    that can say why."""
+    tree(tmp_path)
+    promise(tmp_path, "silent", verdict=None, recorded=("log.txt",))
+
+    [promised] = read(tmp_path, capsys)["outcomes"]["promises"]
+
+    assert [item["kind"] for item in promised["evidence"]] == ["log"]
+
+
+def test_the_verdict_and_the_report_are_not_listed_as_things_to_open(tmp_path, capsys):
+    """One is the answer the suite already read and the other is where its
+    detail already came from, both reported in their own right. Listing them
+    again as "something to open" buries what is actually new."""
+    tree(tmp_path)
+    promise(
+        tmp_path,
+        "broken",
+        verdict=VERDICT_FAILED,
+        junit=FAILING_CASE,
+        recorded=("artifacts/x/video.webm",),
+    )
+
+    [promised] = read(tmp_path, capsys)["outcomes"]["promises"]
+
+    listed = [item["path"] for item in promised["evidence"]]
+    assert not any("junit.xml" in path or path.endswith(VERDICT_FILENAME) for path in listed)
+
+
+def test_the_page_plays_the_recording_where_it_sits(tmp_path, capsys):
+    """The page is read from an extracted artifact with the recording beside
+    it, so the video is embedded rather than described. Relative, because an
+    absolute path would name a directory on whichever machine produced it."""
+    tree(tmp_path)
+    promise(
+        tmp_path,
+        "broken",
+        verdict=VERDICT_FAILED,
+        recorded=("artifacts/broken-chromium/video.webm", "artifacts/broken-chromium/shot.png"),
+    )
+
+    page, _ = rendered(tmp_path, capsys)
+
+    assert (
+        '<video class="recording" controls preload="none" '
+        'src="dev/outcomes/ui/todo-list/broken/artifacts/broken-chromium/video.webm"'
+    ) in page
+    # The screenshot is a link, and the video is not also listed beneath its
+    # own player -- a reader should be offered each file once.
+    assert '<li><span class="kind">video' not in page
+    assert '<li><span class="kind">image' in page
+    assert 'href="dev/outcomes/ui/todo-list/broken/artifacts/broken-chromium/shot.png"' in page
+
+
+def test_the_comment_names_the_path_because_a_file_in_an_artifact_has_no_url(
+    tmp_path, capsys
+):
+    """A CI artifact is one archive, fetched whole: nothing inside it has an
+    address. So the comment names the path and links the archive, which is
+    the whole of what a comment can do -- and the page inside it opens the
+    file."""
+    tree(tmp_path)
+    promise(
+        tmp_path, "broken", verdict=VERDICT_FAILED, recorded=("artifacts/x/video.webm",)
+    )
+    runs = {"dev": read(tmp_path, capsys)}
+
+    comment = reporting.render_markdown(runs, artifact_url="https://ci.invalid/artifacts/7")
+
+    assert "video: `dev/outcomes/ui/todo-list/broken/artifacts/x/video.webm`" in comment
+    assert "[results artifact](https://ci.invalid/artifacts/7)" in comment
+
+
+def test_a_comment_with_nowhere_to_fetch_from_still_names_the_paths(tmp_path, capsys):
+    """A caller that passed no artifact URL -- or a run that uploaded
+    nothing, which reports one as empty. The paths are still what somebody
+    needs to find the files, so they are still there."""
+    tree(tmp_path)
+    promise(
+        tmp_path, "broken", verdict=VERDICT_FAILED, recorded=("artifacts/x/video.webm",)
+    )
+    runs = {"dev": read(tmp_path, capsys)}
+
+    comment = reporting.render_markdown(runs)
+
+    assert "artifacts/x/video.webm" in comment
+    assert "results artifact" not in comment
+
+
+def test_a_green_run_is_not_told_where_to_download_nothing(tmp_path, capsys):
+    """The line pointing at the archive is there to reach a recording. With
+    no failure there is none, and a comment inviting a download that holds
+    nothing worth opening is noise on every passing pull request."""
+    tree(tmp_path)
+    promise(tmp_path, "kept", verdict=VERDICT_PASSED)
+    write(tmp_path / DEFAULT_RESULTS_DIR_NAME / "api" / "junit.xml", service_report(PASSING))
+    runs = {"dev": read(tmp_path, capsys)}
+
+    comment = reporting.render_markdown(runs, artifact_url="https://ci.invalid/artifacts/7")
+
+    assert "results artifact" not in comment
+
+
+def test_what_came_back_is_classified_by_what_opening_it_does(tmp_path):
+    """A runner writes whatever it writes -- seal has no reading of it beyond
+    the verdict -- so this is a classification of file types rather than a
+    list of names any runner was told to produce. Ordered so the recording
+    comes first: a reader opening one thing wants that."""
+    for relative in (
+        "log.txt",
+        "report/index.html",
+        "artifacts/x/trace.zip",
+        "artifacts/x/shot.png",
+        "artifacts/x/video.webm",
+        "artifacts/x/notes.md",
+    ):
+        write(tmp_path / relative, "")
+
+    assert [kind for kind, _ in evidence_in(tmp_path)] == [
+        "video",
+        "image",
+        "trace",
+        "page",
+        "log",
+    ]

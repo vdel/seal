@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | **Status** | Accepted |
-| **Related** | [0001](0001-library-boundary.md), [0009](0009-outcome-tests.md), [0010](0010-outcome-tree.md), [0011](0011-outcome-runners.md) |
+| **Related** | [0001](0001-library-boundary.md), [0009](0009-outcome-tests.md), [0010](0010-outcome-tree.md), [0011](0011-outcome-runners.md), [0013](0013-regression-loop.md) |
 | **How-to** | [Continuous integration](../docs/guides/continuous-integration.md) |
 
 ## Context
@@ -59,6 +59,11 @@ genuinely is theirs to choose.
 - One renderer, downstream of that reading and of nothing else:
   `seal _report` writes a self-contained HTML page and a Markdown summary
   from the reading's own output.
+- A promise that failed is reported with what it left behind to look at --
+  for the `playwright` runner, a video of the browser and a screenshot,
+  recorded on failure only. The page plays them, because it sits in the
+  same archive; the comment names their paths and links the archive, because
+  a file inside a CI artifact has no address of its own.
 - `actions/ci` renders the page into the results artifact it already
   uploads. It still publishes nothing: no check, no comment, no status, not
   even a job summary.
@@ -137,6 +142,50 @@ is really for:
   both and every outside contribution fails over a comment that was never
   possible.
 
+### Why the report carries a recording, and why it cannot link to one
+
+A verdict says a promise broke. It does not say what the browser did, and
+for a browser-driven test that is most of the work: an assertion that timed
+out waiting for a selector reads identically whether the page never loaded,
+loaded the wrong thing, or loaded the right thing behind a dialog.
+
+So the `playwright` runner records a video and a screenshot
+`retain-on-failure` -- nothing kept on a green run -- into the promise's own
+results directory, which is already what syncs back and already what the
+artifact carries. Nothing new is uploaded; what changes is that the report
+says where the recording is, and the page plays it.
+
+That the page *can* play it is a property of where the page lives. It is
+written to the artifact's root, and the recordings sit under it, so a
+relative `src` resolves once somebody extracts the archive -- no server, no
+network, no viewer to install.
+
+The comment cannot do the same, and this is a platform limit rather than a
+decision: **a file inside a CI artifact has no address of its own.** An
+artifact is one archive, fetched whole. So the comment names each
+recording's path and links the archive, which is the most a comment can
+carry, and the page inside the archive is what opens it. A reader who wants
+to watch a failure downloads one thing and opens one file.
+
+What is reported as evidence is deliberately *not* a list of filenames any
+runner was told to produce. A runner writes whatever it writes -- seal has
+no reading of it beyond the verdict
+([RFC 0011](0011-outcome-runners.md)) -- so what came back is classified by
+what opening it does: video, image, trace, page, log. A project's own runner
+that leaves an `.mp4` and a `.log` behind is reported exactly like the one
+seal supplies, without having been told about either.
+
+Two things are excluded from it on purpose. The verdict file, because it is
+the answer the suite already read and reported. And the JUnit report,
+because its detail is already reported as the failed case names beside it --
+listing it again as "something to open" would bury the recording, which is
+the part that is actually new.
+
+A `trace` is not recorded by default. It is the better debugging tool and it
+is megabytes per test, viewable only by loading it into Playwright's own
+viewer -- so it is a project's to ask for through `runner_args`, and it is
+reported like anything else that comes back.
+
 ### Why the rendering is capped, and where
 
 GitHub truncates an issue comment past 65536 characters and says nothing
@@ -167,6 +216,9 @@ indistinguishable from one the tree never declared.
   not. That is the same trade `actions/ci` already makes, and it is confined
   to the same place: nothing in `python/` or `tilt/` knows that GitHub
   exists, and the rendering it consumes is platform-neutral text.
+- A promise that fails now costs a video in the artifact, and a suite where
+  several fail costs several. Bounded by `retain-on-failure` (a green run
+  keeps nothing) and by the artifact's own retention, which a project sets.
 - A project wanting its results somewhere Seal does not render for -- a
   dashboard, a chat channel, a check run with per-test annotations -- still
   builds that from `results` and the artifact, exactly as before. Nothing
@@ -192,6 +244,19 @@ to write a JUnit report.** It would have made one reader do. Rejected: it
 makes every project's runner responsible for a format it has no other use
 for, and it makes the verdict a report rather than the file the runner
 already writes -- two answers to one question again, one layer down.
+
+**Uploading each recording as an artifact of its own, to get a URL per
+file.** It would have made the comment linkable. Rejected: it is one upload
+per failed promise, each with its own retention and its own name in a list
+that is supposed to say what a run found, and it still does not survive the
+artifact expiring. Naming a path inside one archive costs a reader one
+download and keeps the results one thing.
+
+**Recording always rather than on failure.** Simpler to explain, and a
+passing run's video is occasionally interesting. Rejected: it is a video per
+test on every green pull request, uploaded and retained, to answer a
+question nobody asked -- and the run somebody actually goes looking through
+is the red one.
 
 **A third-party reporting action, documented as the recommended one.** It is
 what the worked example uses for its per-shape check run, and it is a good

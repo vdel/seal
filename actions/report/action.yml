@@ -68,6 +68,18 @@ inputs:
       permissions at all.
     required: false
     default: 'true'
+  artifact_url:
+    description: >
+      Where the files this rendering names can be downloaded -- the
+      `results_artifact_url` output of `actions/ci`.
+
+      A file inside a CI artifact has no address of its own: the artifact is
+      one archive, fetched whole. So a comment names the recording's path
+      and links the archive, and the page inside that archive is what opens
+      it. Empty leaves the paths named and unlinked, which is still what
+      somebody needs to find them.
+    required: false
+    default: ''
   source:
     description: >
       What names the run these results came from -- a commit, a branch, a
@@ -106,6 +118,7 @@ runs:
         SEAL_RESULTS: ${{ inputs.results }}
         SEAL_REPORT_TITLE: ${{ inputs.title }}
         SEAL_REPORT_SOURCE: ${{ inputs.source }}
+        SEAL_ARTIFACT_URL: ${{ inputs.artifact_url }}
       shell: bash
       run: |
         printf '%s' "$SEAL_RESULTS" > "$RUNNER_TEMP/seal-results.json"
@@ -113,7 +126,8 @@ runs:
           --results "$RUNNER_TEMP/seal-results.json" \
           --markdown "$RUNNER_TEMP/seal-report.md" \
           --title "$SEAL_REPORT_TITLE" \
-          --source "$SEAL_REPORT_SOURCE"
+          --source "$SEAL_REPORT_SOURCE" \
+          --artifact-url "$SEAL_ARTIFACT_URL"
 
     - name: Write it to this job's summary
       # Compared against the string, never read for truthiness: every input

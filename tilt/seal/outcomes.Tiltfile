@@ -219,6 +219,19 @@ RUN npm init -y > /dev/null \
 
 # Where this outcome's results go is read at run time rather than baked in:
 # one container runs several outcomes, each reporting into its own directory.
+#
+# A failure leaves a video and a screenshot behind, under `outputDir` and so
+# inside the results that sync back to the project. What a red promise costs
+# somebody is working out what the browser actually did, and a recording of
+# it answers that in a way a stack trace cannot -- an assertion that timed
+# out waiting for a selector says the same thing whether the page never
+# loaded, loaded the wrong thing, or loaded the right thing behind a dialog.
+#
+# On failure only, so a green suite pays a recording it deletes and nothing
+# else. A `trace` is deliberately not on: it is the better debugging tool and
+# it is megabytes per test, viewable only by loading it into Playwright's own
+# viewer -- so it is left to a project that wants it, through
+# `runner_args: ["--trace", "retain-on-failure"]` in its seal-test-config.json.
 RUN printf '%s\n' \
   "const results = process.env.{results_var} || '{results}';" \
   "module.exports = {{" \
@@ -228,6 +241,8 @@ RUN printf '%s\n' \
   "  use: {{" \
   "    baseURL: process.env.{base_url_var}," \
   "    launchOptions: {{ args: ['--no-sandbox', '--disable-dev-shm-usage'] }}," \
+  "    video: 'retain-on-failure'," \
+  "    screenshot: 'only-on-failure'," \
   "  }}," \
   "  reporter: [" \
   "    ['list']," \

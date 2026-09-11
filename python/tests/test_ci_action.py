@@ -500,6 +500,21 @@ def test_the_reading_travels_with_the_reports_as_well_as_out_as_an_output():
     assert "$RUNNER_TEMP/seal-results/results.json" in collect["run"]
 
 
+def test_where_the_recordings_can_be_fetched_is_handed_back_too():
+    """A file inside a CI artifact has no address of its own -- the artifact
+    is one archive, fetched whole -- so this is as close as a report
+    published outside the run can get to the recording of a failure. Read off
+    the upload step rather than built from a run id, because only the upload
+    knows which artifact it created."""
+    outputs = _workflow()["outputs"]
+    upload = next(
+        step for step in _steps() if step.get("uses", "").startswith("actions/upload-artifact")
+    )
+
+    assert upload["id"] == "upload"
+    assert outputs["results_artifact_url"]["value"] == "${{ steps.upload.outputs.artifact-url }}"
+
+
 def test_the_reports_themselves_survive_the_run_that_produced_them():
     """The `results` output carries what the reports say, not the reports:
     it is a string with a size limit, and the coverage sitting beside them
@@ -534,7 +549,7 @@ def test_the_worked_example_does_something_with_everything_it_is_handed():
     body = str(consumers)
 
     assert consumers, "nothing in the example reads what the workflow hands back"
-    for output in ("overlays", "results", "results_artifact"):
+    for output in ("overlays", "results", "results_artifact", "results_artifact_url"):
         assert "needs.tests.outputs.{}".format(output) in body, output
 
     # And each of them reports on a run that went red, which is the run whose

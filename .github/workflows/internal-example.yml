@@ -54,6 +54,7 @@ jobs:
       overlays: ${{ steps.seal.outputs.overlays }}
       results: ${{ steps.seal.outputs.results }}
       results_artifact: ${{ steps.seal.outputs.results_artifact }}
+      results_artifact_url: ${{ steps.seal.outputs.results_artifact_url }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -188,6 +189,10 @@ jobs:
       with:
         results: ${{ needs.tests.outputs.results }}
         title: "Seal results (angular-django)"
+        # Where the recordings a failure left behind can be fetched. A file
+        # inside an artifact has no address of its own, so the comment names
+        # the path and links the archive.
+        artifact_url: ${{ needs.tests.outputs.results_artifact_url }}
         # Names which comment this run replaces. One use of the action here,
         # so one key -- a repository gating two projects in one workflow
         # gives each its own, or each keeps overwriting the other's report.

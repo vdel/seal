@@ -145,6 +145,7 @@ why.
 | `overlays` | The overlays this run verified, as a JSON list. What to matrix a per-shape report over. Empty if the run died before it could say which shapes it was going to run -- guard on that, because `fromJSON('')` fails the job reading it. |
 | `results` | What every run found, as one line of JSON keyed by overlay. `{}` when no run was asked to read anything (both switches off) -- an absence of reports by design, not a run that lost them, so the job's own status is the whole of what such a run says. |
 | `results_artifact` | Name of the artifact holding the reports themselves, the reading, and the rendered page. Nothing is uploaded when a run failed before producing any results, so guard your download step. |
+| `results_artifact_url` | Where that artifact can be downloaded. A file inside it has no address of its own -- an artifact is one archive, fetched whole -- so this is as close as a report published outside the run can get to a recording. Empty when nothing was uploaded. |
 
 `results` is shaped like this:
 
@@ -173,7 +174,14 @@ why.
         {"slug": "ui/todo-list/a-deleted-item-stays-deleted",
          "headline": "a deleted item stays deleted", "state": "FAIL",
          "quarantined": false,
-         "failed": ["deleted.stays deleted (junit.xml)"]}
+         "failed": ["deleted.stays deleted (junit.xml)"],
+         "evidence": [
+           {"kind": "video",
+            "path": "outcomes/ui/todo-list/a-deleted-item-stays-deleted/artifacts/…/video.webm"},
+           {"kind": "log",
+            "path": "outcomes/ui/todo-list/a-deleted-item-stays-deleted/log.txt"}
+         ],
+         "evidence_omitted": 0}
       ]
     }
   }
@@ -208,6 +216,14 @@ reported as passed. `failed` carries which case gave way, where that
 promise's runner also wrote a JUnit report -- detail beside the verdict, not
 the verdict itself, which is the file the runner wrote.
 
+`evidence` is what a promise that did **not** hold left behind to look at,
+each `path` relative to that run's own results and so a path inside the
+artifact once the run's name is prefixed. `kind` is `video`, `image`,
+`trace`, `page` or `log`, classified by what opening the file does -- a
+runner writes whatever it writes, so this is not a list of names any runner
+was told to produce. The key is absent where a promise recorded nothing, and
+never present for one that passed.
+
 `read` is `false` when the run was not asked to read the promises at all
 (`run_outcomes: false`). `promises` is then empty and `passed` is `true` --
 because nothing here is a claim about them. That distinction matters: a run
@@ -223,10 +239,40 @@ every promise the suite read.
 | Path | What it is |
 | --- | --- |
 | `<overlay>/<service>/junit.xml` | Each service's own report, as its test stage wrote it. `coverage.xml` and anything else it produced sits beside it, untouched. |
-| `<overlay>/outcomes/<group>/<epic>/<outcome>/` | One directory per promise: the `passed` verdict its container wrote, and whatever else its runner left there. |
+| `<overlay>/outcomes/<group>/<epic>/<outcome>/` | One directory per promise: the `passed` verdict its container wrote, and whatever else its runner left there -- for a promise that failed under the `playwright` runner, that includes a video of the browser and a screenshot of the moment it gave way. |
 | `results.json` | The `results` output above, as a file -- for whoever opens the artifact rather than the workflow run. |
-| `index.html` | A self-contained page: every promise and its state, every service, every failure. Open it from the extracted artifact; it fetches nothing. |
+| `index.html` | A self-contained page: every promise and its state, every service, every failure -- and it **plays the recording** of each failed promise, since the video sits beside it in the same archive. Open it from the extracted artifact; it fetches nothing of its own. |
 | `report.md` | The same thing as Markdown, which is what `actions/report` posts. |
+
+### Watching a failure
+
+A promise that failed under the `playwright` runner seal supplies leaves a
+video of the browser and a screenshot of the moment it gave way, recorded
+`retain-on-failure` -- so a suite that kept every promise records nothing it
+keeps. They land in that promise's own results directory, which is what puts
+them in the artifact.
+
+`index.html` is where they are worth opening: download the artifact, extract
+it, open the page, and each failed promise has its recording embedded under
+it. Nothing is fetched from the network, and nothing is preloaded until you
+press play.
+
+A `trace` is deliberately not recorded. It is the better debugging tool and
+it is megabytes per test, viewable only by loading it into Playwright's own
+viewer -- so it is left to a project that wants it:
+
+```json
+{"runner": [{"name": "ui", "runner_type": "playwright",
+             "runner_args": ["--trace", "retain-on-failure"]}]}
+```
+
+Traces land beside the videos and are reported the same way.
+
+**A file inside a CI artifact has no address of its own.** An artifact is one
+archive, fetched whole, so nothing can link straight to a video. The comment
+names each recording's path and links the archive; the page inside the
+archive is what opens it. That is the whole of what is possible here, and
+`actions/report` does it.
 
 ### One comment, updated in place
 

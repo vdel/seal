@@ -56,6 +56,10 @@ STATE_ORDER = (FAILED, NO_VERDICT, UNTRANSLATED, PASSED)
 MAX_LISTED_PROMISES = 40
 MAX_LISTED_CASES = 10
 MAX_LISTED_PROBLEMS = 10
+# How many of a promise's recordings the comment names. The page lists every
+# one and plays the videos; a comment can do neither, so it names the few a
+# reader would go and fetch and says how many it left out.
+MAX_LISTED_EVIDENCE = 3
 
 # What the page and the comment call themselves. The page's title is what a
 # browser tab shows when somebody opens the artifact; the heading is what
@@ -82,18 +86,36 @@ def render_html(runs: dict, title: str = DEFAULT_TITLE, source: str = "") -> str
     )
 
 
-def render_markdown(runs: dict, title: str = DEFAULT_TITLE) -> str:
+def render_markdown(
+    runs: dict, title: str = DEFAULT_TITLE, artifact_url: str = ""
+) -> str:
     """The same runs, short enough to be a comment.
 
     Leads with the verdict, because the verdict is why somebody is reading
     it: a reviewer scrolling a pull request has to be able to tell a green
     gate from a red one without expanding anything.
+
+    `artifact_url` is where the recordings named below can actually be
+    fetched. A file inside a CI artifact has no address of its own -- the
+    artifact is one archive, downloaded whole -- so a comment can name the
+    path and point at the archive, and that is the whole of what a comment
+    can do. The page inside that archive is what opens them.
     """
     lines = ["## {}".format(title), ""]
     lines.append(_markdown_overview(runs))
     lines.append("")
     for name, run in runs.items():
         lines.extend(_markdown_run(name, run))
+    if artifact_url and any(
+        evidence(name, promise)
+        for name, run in runs.items()
+        for promise in failed_promises(run)
+    ):
+        lines.append(
+            "The recordings above are in the [results artifact]({}) -- download it "
+            "and open `index.html`, which plays them where they sit.".format(artifact_url)
+        )
+        lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -152,6 +174,21 @@ def failed_promises(run: dict) -> list[dict]:
         promise
         for promise in promises(run)
         if promise.get("state") in (FAILED, NO_VERDICT)
+    ]
+
+
+def evidence(run_name: str, promise: dict) -> list[dict]:
+    """What a promise left behind to open, as paths inside the results
+    artifact.
+
+    The reading gives each path relative to its own run's results; the
+    artifact files each run under its name, so prefixing it here is what
+    turns one into the other. Done in the renderer because the artifact's
+    layout is a fact about what uploaded it, not about what the run found.
+    """
+    return [
+        {**item, "href": "{}/{}".format(run_name, item.get("path", ""))}
+        for item in promise.get("evidence", [])
     ]
 
 
@@ -256,6 +293,8 @@ ul.cases li, ul.problems li { overflow-wrap: anywhere; }
 ul.problems li { color: var(--fail); }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: .8rem 1rem; margin: 0 0 1rem; }
 .empty { color: var(--muted); }
+video.recording { display: block; max-width: 100%; margin: .5rem 0; border: 1px solid var(--line); border-radius: 6px; background: #000; }
+ul.evidence .kind { display: inline-block; min-width: 4.5rem; color: var(--muted); font-size: .82em; text-transform: uppercase; letter-spacing: .04em; }
 """
 
 # Which colour a state is rendered in. A promise nobody translated is not a
@@ -316,7 +355,7 @@ def _html_run(name: str, run: dict) -> str:
     listed_problems = problems(run)
     if listed_problems:
         parts.append(_html_problems(listed_problems))
-    parts.append(_html_outcomes(run))
+    parts.append(_html_outcomes(name, run))
     parts.append(_html_services(run))
     return "\n".join(parts)
 
@@ -331,7 +370,7 @@ def _html_problems(problems: list) -> str:
     )
 
 
-def _html_outcomes(run: dict) -> str:
+def _html_outcomes(run_name: str, run: dict) -> str:
     """Every promise this run read, by state.
 
     The whole tree, not just what broke: "these 47 promises still hold" is
@@ -367,6 +406,7 @@ def _html_outcomes(run: dict) -> str:
             detail = '<ul class="cases">{}</ul>'.format(
                 "".join("<li>{}</li>".format(html.escape(str(case))) for case in cases)
             )
+        detail += _html_evidence(run_name, promise)
         rows.append(
             '<tr><td class="slug">{slug}</td><td class="state {css}">{state}{note}</td>'
             "<td>{headline}{detail}</td></tr>".format(
@@ -384,6 +424,54 @@ def _html_outcomes(run: dict) -> str:
         "<table><thead><tr><th>Outcome</th><th>State</th><th>What it promises</th>"
         "</tr></thead><tbody>{rows}</tbody></table>"
     ).format(summary=html.escape(summary or "none declared"), rows="".join(rows))
+
+
+def _html_evidence(run_name: str, promise: dict) -> str:
+    """What this promise recorded, playable where it can be.
+
+    A video is embedded rather than linked, because the page is read from an
+    extracted artifact with the recording sitting beside it -- and what a red
+    browser test costs somebody is working out what the browser actually did.
+    `preload="none"`, so a page listing six failures fetches nothing until
+    somebody presses play.
+
+    Everything else is a link. Relative, for the same reason: these paths are
+    inside the artifact this page travels in, and an absolute one would name
+    a directory on whichever machine produced it.
+    """
+    found = evidence(run_name, promise)
+    if not found:
+        return ""
+    parts = []
+    for item in found:
+        href = html.escape(item["href"])
+        if item.get("kind") == "video":
+            # The fallback inside the element, not a line of its own beside
+            # it: a browser that plays this shows the player and a browser
+            # that cannot shows the link, and a reader sees one of the two
+            # rather than the same file twice.
+            parts.append(
+                '<video class="recording" controls preload="none" src="{}">'
+                '<a href="{}">{}</a></video>'.format(href, href, href)
+            )
+    # Everything the player above did not already offer. The path shown is
+    # the one inside the artifact, because that is what somebody who has
+    # extracted it is looking for.
+    links = "".join(
+        '<li><span class="kind">{}</span> <a href="{}">{}</a></li>'.format(
+            html.escape(str(item.get("kind", "file"))),
+            html.escape(item["href"]),
+            html.escape(item["href"]),
+        )
+        for item in found
+        if item.get("kind") != "video"
+    )
+    omitted = int(promise.get("evidence_omitted", 0))
+    if omitted:
+        links += '<li class="empty">and {} more file(s)</li>'.format(omitted)
+    if links:
+        parts.append('<ul class="cases evidence">{}</ul>'.format(links))
+    return "".join(parts)
 
 
 def _state_label(state: str) -> str:
@@ -519,6 +607,19 @@ def _markdown_run(name: str, run: dict) -> list[str]:
                     ": {}".format(promise["headline"]) if promise.get("headline") else "",
                 )
             )
+            # What it recorded, named rather than linked: a file inside a CI
+            # artifact has no address of its own, so the path is what lets
+            # somebody find it once the archive is open.
+            recorded = evidence(name, promise)
+            for item in recorded[:MAX_LISTED_EVIDENCE]:
+                lines.append(
+                    "  - {}: `{}`".format(item.get("kind", "file"), item["href"])
+                )
+            left = len(recorded) - MAX_LISTED_EVIDENCE + int(
+                promise.get("evidence_omitted", 0)
+            )
+            if left > 0:
+                lines.append("  - and {} more file(s)".format(left))
         if len(broken) > MAX_LISTED_PROMISES:
             lines.append("- and {} more".format(len(broken) - MAX_LISTED_PROMISES))
         lines.append("")

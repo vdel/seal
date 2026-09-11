@@ -538,3 +538,46 @@ def test_a_file_that_is_not_json_is_complained_about_once(tmp_path):
 
     assert len(from_runners) == 1
     assert from_loop == []
+
+
+# --- what the runner seal supplies records --------------------------------
+
+OUTCOMES_TILTFILE = (
+    Path(__file__).resolve().parents[2] / "tilt" / "seal" / "outcomes.Tiltfile"
+)
+
+
+def test_the_playwright_runner_records_a_failure():
+    """A red browser test costs somebody working out what the browser
+    actually did: an assertion that timed out waiting for a selector says the
+    same thing whether the page never loaded, loaded the wrong thing, or
+    loaded the right thing behind a dialog. A recording answers that, and
+    nothing else the run leaves behind does.
+
+    Read off the Starlark, because the config is generated there and a value
+    restated in this file would agree with itself while disagreeing with
+    what runs.
+    """
+    starlark = OUTCOMES_TILTFILE.read_text(encoding="utf-8")
+
+    assert "video: 'retain-on-failure'" in starlark
+    assert "screenshot: 'only-on-failure'" in starlark
+
+
+def test_what_it_records_lands_where_the_results_come_back_from():
+    """A recording written anywhere else is a recording that stays in the
+    container. `outputDir` is inside the directory that syncs back to the
+    project, which is what puts it in the artifact a run uploads."""
+    starlark = OUTCOMES_TILTFILE.read_text(encoding="utf-8")
+
+    assert "outputDir: results + '/artifacts'" in starlark
+
+
+def test_nothing_is_recorded_on_a_run_that_passed():
+    """`retain-on-failure`, never `on`. A suite that kept every promise would
+    otherwise upload a video per test on every green pull request, and the
+    one run somebody goes looking through is the red one."""
+    starlark = OUTCOMES_TILTFILE.read_text(encoding="utf-8")
+
+    assert "video: 'on'" not in starlark
+    assert "screenshot: 'on'" not in starlark
