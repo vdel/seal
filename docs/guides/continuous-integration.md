@@ -265,7 +265,16 @@ needs `pull-requests: write` and the gate has no business holding it:
 
 It outputs `comment_url`, empty where it commented nothing.
 
-Two behaviours worth knowing:
+The comment ends with the commit it is about:
+
+> Results for commit [1a2b3c4](https://github.com/you/your-project/commit/1a2b3c4).
+
+It is replaced in place on every run, so that line is the only thing dating
+it -- and it names the pull request's **head** commit, not the merge commit
+`github.sha` carries on a `pull_request` event, which appears nowhere in your
+branch.
+
+Two more behaviours worth knowing:
 
 - **A pull request from a fork gets no comment.** GitHub gives such a run a
   read-only token whatever your job's `permissions` say, so the action warns

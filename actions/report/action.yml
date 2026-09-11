@@ -142,6 +142,16 @@ runs:
         # to fail.
         SEAL_PULL_FROM_FORK: ${{ github.event.pull_request.head.repo.fork }}
         SEAL_COMMENT_KEY: ${{ inputs.comment_key }}
+        # Which commit these results are about. The pull request's head
+        # rather than `github.sha`, which on a pull_request event is the
+        # merge commit GitHub made to test with -- a sha that appears
+        # nowhere in the branch, and so answers "is this the latest?" with
+        # something nobody can compare against. `github.sha` is the fallback
+        # for an event that carries no pull request head.
+        SEAL_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        # Where a commit is browsed, which is not where the API lives, and
+        # is not github.com on an enterprise instance.
+        SEAL_SERVER_URL: ${{ github.server_url }}
       shell: bash
       run: |
         uv run --no-project python - <<'PY' >> "$GITHUB_OUTPUT"
@@ -190,10 +200,32 @@ runs:
 
         with open(os.environ["RUNNER_TEMP"] + "/seal-report.md", encoding="utf-8") as f:
             rendering = f.read()
+
+        # Which commit this is about, on the last line. The comment is
+        # replaced in place on every run, so without it a reader cannot tell
+        # a report of the push they are looking at from one still sitting
+        # there from three pushes ago -- the one question a comment that
+        # updates itself has to answer about itself.
+        commit = os.environ.get("SEAL_COMMIT_SHA", "").strip()
+        footer = ""
+        if commit:
+            footer = "\n\nResults for commit [{}]({}/{}/commit/{}).\n".format(
+                commit[:7], os.environ.get("SEAL_SERVER_URL", "").rstrip("/"),
+                repository, commit,
+            )
+
         body = marker + "\n\n" + rendering
-        if len(body) > LIMIT:
+        # Truncated before the footer is added, never after: the line saying
+        # which commit these results are about is the last thing that should
+        # be lost to a suite too big to fit.
+        room = LIMIT - len(footer)
+        if len(body) > room:
             cut = "\n\n_Truncated: the full report is in this run's results artifact._\n"
-            body = body[: LIMIT - len(cut)] + cut
+            body = body[: room - len(cut)] + cut
+        # rstrip first: the rendering ends in a newline of its own, and the
+        # footer opens with a blank line, so without it the two make a gap
+        # that grows every time either end is edited.
+        body = body.rstrip() + footer
 
 
         def call(method, url, payload=None):

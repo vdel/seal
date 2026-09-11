@@ -208,7 +208,9 @@ on the pull request, use Seal's own `report` action from a job of its own:
 ```
 
 It writes the rendering to that job's summary and keeps one comment on the
-pull request current, replaced on every run. Both can be turned off
+pull request current, replaced on every run -- ending with the head commit
+it is about, since replacing it in place leaves nothing else to date it by.
+Both can be turned off
 (`comment`, `job_summary` -- compared as the strings `'true'`/anything
 else). A pull request from a fork gets a read-only token whatever the job
 declares, so there the action warns instead of failing.

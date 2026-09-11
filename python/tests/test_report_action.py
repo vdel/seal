@@ -251,10 +251,13 @@ def _run(api, tmp_path: Path, rendering: str = "## it failed\n", **environment):
 
     environment = {
         "GITHUB_API_URL": api.url,
+        "GITHUB_SERVER_URL": "https://github.invalid",
+        "SEAL_SERVER_URL": "https://github.invalid",
         "GITHUB_REPOSITORY": "acme/app",
         "GH_TOKEN": "a-token",
         "SEAL_PULL_NUMBER": "42",
         "SEAL_COMMENT_KEY": "default",
+        "SEAL_COMMIT_SHA": "0123456789abcdef0123456789abcdef01234567",
         "RUNNER_TEMP": str(tmp_path),
         **environment,
     }
@@ -383,6 +386,48 @@ def test_a_refused_comment_on_a_fork_is_a_warning_and_not_a_failure(api, tmp_pat
     assert _output(completed) == "url="
 
 
+def _posted_body(api) -> str:
+    """The body of whatever this run wrote -- posted or patched."""
+    return next(
+        payload["body"]
+        for method, _, payload in api.requests
+        if method in ("POST", "PATCH")
+    )
+
+
+def test_the_comment_ends_by_naming_the_commit_it_is_about(api, tmp_path):
+    """The comment is replaced in place on every run, so it is the one thing
+    on the pull request that cannot be dated by where it sits. Without this a
+    reader cannot tell a report of the push they are looking at from one
+    still standing from three pushes ago."""
+    completed = _run(api, tmp_path)
+
+    assert completed.returncode == 0, completed.stderr
+    body = _posted_body(api)
+
+    assert body.rstrip().endswith(
+        "Results for commit [0123456](https://github.invalid/acme/app/commit/"
+        "0123456789abcdef0123456789abcdef01234567)."
+    )
+
+
+def test_the_commit_named_is_the_one_somebody_can_look_up(api, tmp_path):
+    """On a pull_request event `github.sha` is the merge commit GitHub made
+    to test with -- a sha that appears nowhere in the branch. The action
+    reads the pull request's head instead, and this is what would notice if
+    that ever went back to the merge commit."""
+    step = next(
+        s for s in _steps() if s["name"] == "Post or update the pull request's comment"
+    )
+
+    assert step["env"]["SEAL_COMMIT_SHA"] == (
+        "${{ github.event.pull_request.head.sha || github.sha }}"
+    )
+    # And browsed where the instance actually is, which on an enterprise
+    # instance is not github.com.
+    assert step["env"]["SEAL_SERVER_URL"] == "${{ github.server_url }}"
+
+
 def test_a_rendering_too_big_to_comment_is_cut_and_says_where_to_read_it(api, tmp_path):
     """GitHub truncates a comment past its limit with nothing to say it did.
     The renderer's own caps keep a normal report far inside it; this is the
@@ -398,3 +443,6 @@ def test_a_rendering_too_big_to_comment_is_cut_and_says_where_to_read_it(api, tm
     ]
     assert len(payload["body"]) < 65536
     assert "results artifact" in payload["body"]
+    # And the line saying which commit this is about survives the cut: it is
+    # the last thing that should be lost to a suite too big to fit.
+    assert payload["body"].rstrip().endswith("commit/0123456789abcdef0123456789abcdef01234567).")
