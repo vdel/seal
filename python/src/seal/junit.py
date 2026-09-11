@@ -110,9 +110,10 @@ class RunTests:
 
     A run's results directory holds one subdirectory per source of reports:
     each service's own under its service name, and the outcome suite's under
-    `outcomes` (see outcome_suite.OUTCOMES_RESULTS_SUBDIR). Nothing here has
-    to tell those apart -- a directory that came back is something that ran,
-    and what its reports say is read the same way either way.
+    `outcomes` (see outcome_suite.OUTCOMES_RESULTS_SUBDIR). A caller reading
+    the suite through outcome_suite.py -- which is what the gate's own
+    per-promise verdict comes from -- excludes that one here, so the same
+    results are never read twice by two modules free to disagree about them.
 
     `problems` are the run's own rather than any source's: a results
     directory that isn't there at all is a run that produced nothing, which
@@ -139,13 +140,19 @@ class RunTests:
         return sum(len(source.failed) for source in self.sources)
 
 
-def read_run_tests(results_dir: Path) -> RunTests:
+def read_run_tests(results_dir: Path, exclude: tuple[str, ...] = ()) -> RunTests:
     """Read every JUnit report one run left behind under `results_dir`.
 
     Silence is a failure here for the same reason it is in
     read_service_tests(): a run that produced nothing looks exactly like one
     whose tests all passed, and that is the claim a gate's results must never
     be readable as.
+
+    `exclude` names subdirectories somebody else reads -- the outcome
+    suite's, for a caller reading it through outcome_suite.py. Whether the
+    run produced anything is still decided before the exclusion, so a
+    project whose only results are its promises' is not reported as a run
+    that produced nothing.
     """
     if not results_dir.is_dir():
         return RunTests(
@@ -157,12 +164,13 @@ def read_run_tests(results_dir: Path) -> RunTests:
             ),
         )
 
+    came_back = [child for child in sorted(results_dir.iterdir()) if child.is_dir()]
     sources = tuple(
         read_service_tests(child.name, child)
-        for child in sorted(results_dir.iterdir())
-        if child.is_dir()
+        for child in came_back
+        if child.name not in exclude
     )
-    if not sources:
+    if not came_back:
         return RunTests(
             sources=(),
             problems=("no results came back from this run ({} is empty)".format(results_dir),),

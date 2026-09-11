@@ -38,6 +38,7 @@ than a missing RFC.
 | [0012](0012-translation-and-review.md) | Translation and review | Why a translation needs a human, and what Seal does around it |
 | [0013](0013-regression-loop.md) | The regression loop | How a red suite gets back to green without anybody editing a test |
 | [0014](0014-seal-on-seal.md) | Seal homologates itself | What Seal promises, and the runner those promises need |
+| [0015](0015-reporting-what-a-run-found.md) | Reporting what a run found | Who reads a verdict, who renders it, and who publishes it |
 
 ## Reading order
 
@@ -49,6 +50,9 @@ than a missing RFC.
 - **The gate** -- 0009 first; it is the argument the rest of the outcome
   series serves. Then 0010 (the tree), 0011 (what runs it), 0012 (how a
   promise becomes a test), 0013 (what happens when one goes red).
+
+0015 sits beside the gate: what a run establishes is 0009's, and how
+anybody finds out is 0015's.
 
 0014 reads last, and reads back over everything above it: it states what
 Seal promises an adopting project, which is the whole series as

@@ -1,0 +1,515 @@
+"""What a pipeline hands back about its promises, and what a person reads.
+
+Two layers, and the seam between them is the point. `seal _tests-results`
+*reads* -- through the same modules the gate's own verdicts came from, so it
+cannot disagree with the run it describes. `seal _report` *renders* -- a page
+and a comment, from what the reading printed and from nothing else.
+
+Every tree and every results directory here is one the test writes itself, so
+what is checked is what an adopting project gets rather than what
+`examples/angular-django` happens to hold.
+"""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from seal import reporting
+from seal.outcome_suite import (
+    DEFAULT_RESULTS_DIR_NAME,
+    FAILED,
+    NO_VERDICT,
+    OUTCOMES_RESULTS_SUBDIR,
+    PASSED,
+    UNTRANSLATED,
+    VERDICT_FAILED,
+    VERDICT_FILENAME,
+    VERDICT_PASSED,
+)
+from seal.outcomes import QUARANTINE_FILENAME
+from seal.runners import CONFIG_FILENAME, PLAYWRIGHT, RUNNER_FIELD, TAP
+from seal.seal import MAX_RENDERED_FAILURES, main
+
+GROUP = "ui"
+
+
+def write(path: Path, body: str = "") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def tree(project: Path, group: str = GROUP, runner_type: str = PLAYWRIGHT) -> Path:
+    """An outcome tree with one group, which is the smallest there is."""
+    outcomes = project / "outcomes"
+    write(
+        outcomes / CONFIG_FILENAME,
+        json.dumps({RUNNER_FIELD: [{"name": group, "runner_type": runner_type}]}) + "\n",
+    )
+    return outcomes
+
+
+def promise(
+    project: Path,
+    name: str,
+    epic: str = "todo-list",
+    headline: str | None = None,
+    translated: bool = True,
+    verdict: str | None = None,
+    quarantine: str = "",
+    group: str = GROUP,
+    junit: str | None = None,
+) -> Path:
+    """One promise, and whatever its container left behind.
+
+    `verdict` None stands for a test that ran and wrote nothing, which is a
+    different thing from a promise nothing has been translated from yet --
+    telling those two apart is most of what the reading below is for.
+    """
+    directory = (project / "outcomes" / group / epic / name)
+    write(directory / "prompt.md", "# {}\n".format(headline if headline is not None else name))
+    if translated:
+        write(directory / "{}.spec.ts".format(name), "test('a promise', () => {});\n")
+    if quarantine:
+        write(directory / QUARANTINE_FILENAME, quarantine + "\n")
+    results = (
+        project / DEFAULT_RESULTS_DIR_NAME / OUTCOMES_RESULTS_SUBDIR / group / epic / name
+    )
+    if verdict is not None:
+        write(results / VERDICT_FILENAME, verdict + "\n")
+    if junit is not None:
+        write(results / "junit.xml", junit)
+    return directory
+
+
+FAILING_CASE = (
+    "<testsuite name='outcome' tests='1' failures='1'>"
+    "<testcase classname='deleted' name='stays deleted'><failure message='no'/></testcase>"
+    "</testsuite>"
+)
+
+
+def service_report(*cases: str, name: str = "api") -> str:
+    return "<testsuite name='{}' tests='{}'>{}</testsuite>".format(
+        name, len(cases), "".join(cases)
+    )
+
+
+PASSING = "<testcase classname='api.tests' name='it_works'/>"
+FAILING = "<testcase classname='api.tests' name='it_does_not'><failure message='no'/></testcase>"
+
+
+def read(project: Path, capsys, *extra: str) -> dict:
+    """`seal _tests-results` against one run of this project."""
+    assert (
+        main(
+            [
+                "_tests-results",
+                "--run",
+                "dev={}".format(project / DEFAULT_RESULTS_DIR_NAME),
+                "--outcomes-dir",
+                str(project / "outcomes"),
+                *extra,
+            ]
+        )
+        == 0
+    )
+    return json.loads(capsys.readouterr().out)["dev"]
+
+
+# --- what the reading says about a promise ----------------------------------
+
+
+def test_every_promise_is_in_what_the_caller_is_handed(tmp_path, capsys):
+    """The whole tree, whatever happened to it. A promise left out of the
+    results is indistinguishable from one that passed, and from one the tree
+    never declared -- which is the claim the outcome tree exists to make
+    impossible."""
+    tree(tmp_path)
+    promise(tmp_path, "kept", verdict=VERDICT_PASSED)
+    promise(tmp_path, "broken", verdict=VERDICT_FAILED)
+    promise(tmp_path, "silent", verdict=None)
+    promise(tmp_path, "untranslated", translated=False)
+
+    run = read(tmp_path, capsys)
+
+    assert {promise["slug"]: promise["state"] for promise in run["outcomes"]["promises"]} == {
+        "ui/todo-list/kept": PASSED,
+        "ui/todo-list/broken": FAILED,
+        "ui/todo-list/silent": NO_VERDICT,
+        "ui/todo-list/untranslated": UNTRANSLATED,
+    }
+    assert run["outcomes"]["counts"] == {PASSED: 1, FAILED: 1, NO_VERDICT: 1, UNTRANSLATED: 1}
+
+
+def test_a_promise_is_named_by_what_it_promises_and_not_only_by_its_slug(tmp_path, capsys):
+    """A reader deciding whether to merge has not necessarily opened the
+    tree. The headline is what the project actually promises; the slug is
+    only how the tree spells it."""
+    tree(tmp_path)
+    promise(tmp_path, "one", headline="a deleted item stays deleted", verdict=VERDICT_FAILED)
+
+    [promised] = read(tmp_path, capsys)["outcomes"]["promises"]
+
+    assert promised["headline"] == "a deleted item stays deleted"
+
+
+def test_a_promise_whose_runner_writes_no_report_still_has_a_verdict(tmp_path, capsys):
+    """A `tap` or `custom` runner writes a verdict file and no JUnit XML at
+    all. Read as a service's own tests would be, that is a suite that came
+    back silent -- a failure. It is not: the verdict file is the contract
+    (see /rfcs/0011-outcome-runners.md), and a project whose promises all
+    hold must not be told its gate is red."""
+    tree(tmp_path, runner_type=TAP)
+    write(tmp_path / "outcomes" / GROUP / "run", "#!/bin/sh\nexit 0\n")
+    promise(tmp_path, "kept", verdict=VERDICT_PASSED)
+
+    run = read(tmp_path, capsys)
+
+    assert run["outcomes"]["passed"]
+    assert run["passed"]
+    assert run["outcomes"]["problems"] == []
+
+
+def test_a_failing_promise_carries_which_case_failed_where_there_is_one(tmp_path, capsys):
+    """Detail rather than verdict: the verdict is the file the suite read,
+    and this is what a runner that also wrote a report says about which part
+    of the test gave way. Somebody reading a report wants both."""
+    tree(tmp_path)
+    promise(tmp_path, "broken", verdict=VERDICT_FAILED, junit=FAILING_CASE)
+
+    [promised] = read(tmp_path, capsys)["outcomes"]["promises"]
+
+    assert promised["failed"] == ["deleted.stays deleted (junit.xml)"]
+
+
+def test_a_broken_promise_fails_the_run_even_where_every_service_passed(tmp_path, capsys):
+    """The two halves of what a green run claims. A service suite that passed
+    says nothing about whether the application still keeps its promises, and
+    a headline over the two of them must never be green while either is
+    red."""
+    tree(tmp_path)
+    promise(tmp_path, "broken", verdict=VERDICT_FAILED)
+    write(tmp_path / DEFAULT_RESULTS_DIR_NAME / "api" / "junit.xml", service_report(PASSING))
+
+    run = read(tmp_path, capsys)
+
+    assert run["sources"][0]["passed"]
+    assert not run["passed"]
+
+
+def test_a_quarantined_failure_is_reported_and_does_not_fail_the_run(tmp_path, capsys):
+    """The entire point of the state: a test whose determinism somebody is
+    fixing shouldn't block every merge meanwhile. It is still reported, and
+    still not reported as passed."""
+    tree(tmp_path)
+    promise(
+        tmp_path, "flaky", verdict=VERDICT_FAILED, quarantine="its fixture races the API"
+    )
+
+    run = read(tmp_path, capsys)
+
+    assert run["passed"]
+    assert run["outcomes"]["quarantined"] == 1
+    [promised] = run["outcomes"]["promises"]
+    assert promised["state"] == FAILED and promised["quarantined"] is True
+
+
+def test_results_from_a_suite_no_tree_declares_are_a_problem(tmp_path, capsys):
+    """Verdicts came back and the tree read here declares no promise, so the
+    two are not describing the same run. Reported, because the alternative
+    renders as a project that promises nothing -- and a suite nobody declared
+    is exactly what a green gate must not claim on a project's behalf."""
+    tree(tmp_path)
+    write(
+        tmp_path / DEFAULT_RESULTS_DIR_NAME / OUTCOMES_RESULTS_SUBDIR / "ui" / "e" / "o"
+        / VERDICT_FILENAME,
+        VERDICT_PASSED,
+    )
+
+    run = read(tmp_path, capsys)
+
+    assert run["outcomes"]["problems"]
+    assert not run["outcomes"]["passed"]
+    assert not run["passed"]
+
+
+def test_a_project_with_no_outcome_tree_is_not_a_project_with_a_broken_one(tmp_path, capsys):
+    """Outcome tests are something a project adopts, not something it has to
+    have before `seal` will report on it."""
+    write(tmp_path / DEFAULT_RESULTS_DIR_NAME / "api" / "junit.xml", service_report(PASSING))
+
+    run = read(tmp_path, capsys)
+
+    assert run["passed"]
+    assert run["outcomes"]["promises"] == []
+    assert run["outcomes"]["problems"] == []
+
+
+def test_the_reading_is_still_one_line_a_job_output_can_carry(tmp_path, capsys):
+    """It is written to $GITHUB_OUTPUT as `results=<json>`, which is a single
+    line. A newline in a promise's own headline would end the value there and
+    leave the rest being parsed as more output."""
+    tree(tmp_path)
+    promise(tmp_path, "one", headline="a headline", verdict=VERDICT_PASSED)
+
+    main(
+        [
+            "_tests-results",
+            "--run",
+            "dev={}".format(tmp_path / DEFAULT_RESULTS_DIR_NAME),
+            "--outcomes-dir",
+            str(tmp_path / "outcomes"),
+        ]
+    )
+
+    assert capsys.readouterr().out.count("\n") == 1
+
+
+# --- and what a person reads ------------------------------------------------
+
+
+def rendered(project: Path, capsys, **kwargs) -> tuple[str, str]:
+    """The page and the comment, rendered from one reading of this project."""
+    runs = {"dev": read(project, capsys)}
+    return (
+        reporting.render_html(runs, **kwargs),
+        reporting.render_markdown(runs, **{k: v for k, v in kwargs.items() if k != "source"}),
+    )
+
+
+def test_both_renderings_say_a_red_run_is_red(tmp_path, capsys):
+    """The one thing a report is for. A reviewer scrolling a pull request has
+    to be able to tell a green gate from a red one without expanding
+    anything, and a page whose headline disagreed with the gate would be
+    worse than no page."""
+    tree(tmp_path)
+    promise(tmp_path, "broken", headline="a deleted item stays deleted", verdict=VERDICT_FAILED)
+
+    page, comment = rendered(tmp_path, capsys)
+
+    assert "FAILED" in page and "FAILED" in comment
+    for text in (page, comment):
+        assert "ui/todo-list/broken" in text
+        assert "a deleted item stays deleted" in text
+
+
+def test_the_page_holds_every_promise_and_the_comment_leads_with_what_broke(tmp_path, capsys):
+    """Two audiences, one source. The page is read from an artifact and has
+    room for the whole tree -- "these promises still hold" is the claim a
+    green gate makes, and a page that only listed failures would never show
+    it being made. The comment has a hard size limit, so it leads with the
+    failures and counts the rest."""
+    tree(tmp_path)
+    promise(tmp_path, "kept", headline="an added item shows up", verdict=VERDICT_PASSED)
+    promise(tmp_path, "broken", headline="a deleted item stays deleted", verdict=VERDICT_FAILED)
+
+    page, comment = rendered(tmp_path, capsys)
+
+    assert "an added item shows up" in page
+    assert "a deleted item stays deleted" in page
+    # The comment names what broke, and says how many held without listing
+    # them.
+    assert "a deleted item stays deleted" in comment
+    assert "an added item shows up" not in comment
+    assert "1 passed" in comment
+
+
+def test_a_promise_that_left_no_verdict_reads_as_one_nobody_can_vouch_for(tmp_path, capsys):
+    """Not as a kind of failure to skim past, and never as a pass: a test
+    that did not run is what a green suite must not be able to claim (see
+    /rfcs/0009-outcome-tests.md)."""
+    tree(tmp_path)
+    promise(tmp_path, "silent", verdict=None)
+
+    page, comment = rendered(tmp_path, capsys)
+
+    assert NO_VERDICT in page
+    assert NO_VERDICT in comment
+
+
+def test_an_untranslated_promise_is_reported_and_does_not_read_as_a_failure(tmp_path, capsys):
+    """An ordinary state a project sits in. It appears in the report because
+    a promise nobody can see is a promise nobody translates, and it is not
+    news about the application."""
+    tree(tmp_path)
+    promise(tmp_path, "not-yet", translated=False)
+    write(tmp_path / DEFAULT_RESULTS_DIR_NAME / "api" / "junit.xml", service_report(PASSING))
+
+    page, comment = rendered(tmp_path, capsys)
+
+    assert UNTRANSLATED in page
+    assert "1 with no test yet" in comment
+    assert "All 1 run passed." in comment
+
+
+def test_nothing_somebody_else_wrote_reaches_the_page_as_markup(tmp_path, capsys):
+    """A promise's headline and a test's name are whatever somebody typed,
+    and a report's text can come from the service under test. A page that
+    interpolated them unescaped would execute what a test was named."""
+    tree(tmp_path)
+    promise(
+        tmp_path,
+        "injected",
+        headline="<script>alert('x')</script> & <b>bold</b>",
+        verdict=VERDICT_FAILED,
+    )
+
+    page, _ = rendered(tmp_path, capsys)
+
+    assert "<script>" not in page
+    assert "&lt;script&gt;" in page
+
+
+def test_the_page_fetches_nothing(tmp_path, capsys):
+    """It is read from an artifact download -- often offline, often long
+    after the run. A stylesheet or a font from somewhere else is a page that
+    renders wrong exactly when somebody needs it."""
+    tree(tmp_path)
+    promise(tmp_path, "one", verdict=VERDICT_PASSED)
+
+    page, _ = rendered(tmp_path, capsys)
+
+    for reach in ("http://", "https://", "<script", "<link", "<img"):
+        assert reach not in page, reach
+
+
+def test_a_run_that_produced_nothing_is_rendered_as_exactly_that(tmp_path, capsys):
+    """The shape whose run died before writing a single report. It looks from
+    the reports exactly like a shape nobody asked for, so the rendering has
+    to say which it was -- which is the whole reason a reading is handed back
+    alongside them."""
+    runs = {"dev": {"passed": False, "cases": 0, "skipped": 0, "failed": 0,
+                    "problems": ["no results came back from this run"], "sources": [],
+                    "outcomes": {}}}
+
+    page = reporting.render_html(runs)
+    comment = reporting.render_markdown(runs)
+
+    assert "no results came back from this run" in page
+    assert "no results came back from this run" in comment
+
+
+def test_no_runs_at_all_is_not_rendered_as_nothing_wrong(tmp_path):
+    """A pipeline that handed back an empty reading. An empty page reads as a
+    clean run, which is the one thing it must never read as."""
+    page = reporting.render_html({})
+    comment = reporting.render_markdown({})
+
+    assert "no runs" in page
+    assert "No runs" in comment
+
+
+def test_a_capped_listing_says_how_much_it_left_out(tmp_path, capsys):
+    """A listing that quietly got shorter would say a suite failed less than
+    it did."""
+    tree(tmp_path)
+    cases = "".join(
+        "<testcase classname='c' name='case{}'><failure message='no'/></testcase>".format(index)
+        for index in range(MAX_RENDERED_FAILURES + 3)
+    )
+    write(
+        tmp_path / DEFAULT_RESULTS_DIR_NAME / "api" / "junit.xml",
+        "<testsuite name='api' tests='{}'>{}</testsuite>".format(
+            MAX_RENDERED_FAILURES + 3, cases
+        ),
+    )
+
+    page, comment = rendered(tmp_path, capsys)
+
+    assert "and 3 more" in page
+    assert "{} of {} tests failed".format(
+        MAX_RENDERED_FAILURES + 3, MAX_RENDERED_FAILURES + 3
+    ) in comment
+    assert "and {} more".format(MAX_RENDERED_FAILURES + 3 - reporting.MAX_LISTED_CASES) in comment
+
+
+def test_the_comment_stays_inside_what_a_comment_can_hold(tmp_path, capsys):
+    """GitHub truncates an issue comment past 65536 characters, with nothing
+    to say it did. A big tree and a big failure together are what would find
+    that out on somebody's pull request."""
+    tree(tmp_path)
+    for index in range(200):
+        promise(
+            tmp_path,
+            "promise-{}".format(index),
+            headline="a promise with a headline of some length " * 3,
+            verdict=VERDICT_FAILED,
+        )
+
+    _, comment = rendered(tmp_path, capsys)
+
+    assert len(comment) < 65536
+    # And says what it left out, so the cap can never be read as a shorter
+    # suite.
+    assert "and {} more".format(200 - reporting.MAX_LISTED_PROMISES) in comment
+
+
+def test_what_names_the_run_is_the_callers_to_say(tmp_path, capsys):
+    """Only the caller knows what identifies a run in whatever performed it
+    -- a commit, a branch, a URL -- so it is rendered verbatim rather than
+    reconstructed."""
+    tree(tmp_path)
+    promise(tmp_path, "one", verdict=VERDICT_PASSED)
+
+    page, _ = rendered(tmp_path, capsys, title="Nightly", source="acme/app@deadbee")
+
+    assert "Nightly" in page
+    assert "acme/app@deadbee" in page
+
+
+# --- the command that writes them -------------------------------------------
+
+
+def test_the_report_command_writes_what_it_was_asked_for(tmp_path, capsys):
+    """Files, and nothing else. Where a rendering goes -- an artifact, a job
+    summary, a comment -- is the project's decision, so this writes and never
+    sends."""
+    reading = tmp_path / "results.json"
+    reading.write_text(
+        json.dumps({"dev": {"passed": True, "cases": 1, "skipped": 0, "failed": 0,
+                            "problems": [], "sources": [], "outcomes": {}}}),
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "_report",
+                "--results",
+                str(reading),
+                "--html",
+                str(tmp_path / "index.html"),
+                "--markdown",
+                str(tmp_path / "report.md"),
+            ]
+        )
+        == 0
+    )
+
+    assert "<!DOCTYPE html>" in (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert "dev" in (tmp_path / "report.md").read_text(encoding="utf-8")
+
+
+def test_rendering_nowhere_is_refused(tmp_path, capsys):
+    """A command that read the results and wrote nothing would exit zero
+    having done nothing, and the pipeline that called it would upload an
+    artifact with no report in it."""
+    reading = tmp_path / "results.json"
+    reading.write_text("{}", encoding="utf-8")
+
+    assert main(["_report", "--results", str(reading)]) == 1
+    assert "--html" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("body", ["not json at all", "[1, 2]"])
+def test_results_that_are_not_a_reading_are_refused(body, tmp_path, capsys):
+    """What this renders is what `seal _tests-results` printed. Anything else
+    is a pipeline wired up wrong, and rendering an empty page from it would
+    hide that behind a report saying nothing is wrong."""
+    reading = tmp_path / "results.json"
+    reading.write_text(body, encoding="utf-8")
+
+    assert main(["_report", "--results", str(reading), "--markdown", str(tmp_path / "r.md")]) == 1
+    assert "Error" in capsys.readouterr().err

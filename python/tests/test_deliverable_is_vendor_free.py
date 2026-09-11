@@ -29,13 +29,13 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # What the deliverable is: the two directories a project consumes, plus the
-# action it uses. `internal-*.yml` are this repository's own CI -- a caller,
+# actions it uses. `internal-*.yml` are this repository's own CI -- a caller,
 # like any adopting project's would be -- and are free to name whatever
 # store this repository uses.
 DELIVERABLE = (
     "python/src/seal",
     "tilt",
-    "actions/ci/action.yml",
+    "actions",
     ".claude/skills",
     ".claude/agents",
 )

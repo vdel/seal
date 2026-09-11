@@ -20,6 +20,14 @@ second half of this check breaks the promise and asks again, because "how
 results are presented is my repository's decision" makes no exception for a
 red run.
 
+**The findings can be read by a person, and reading them publishes
+nothing.** `seal _tests-results` and `seal _report` are what a pipeline
+reaches for: the first says what the run found, the second writes a page and
+a Markdown summary of it. Both are run inside the same empty `$HOME`, so
+what is asserted is not only that a rendering exists but that producing one
+reached nowhere a credential or a published-to destination would be
+recorded.
+
 **A project can build a presentation from what it was handed.** Not a
 separate assertion -- it is what the first paragraph already does: reading
 `tests-results/` directly and turning a raw file into PASS/FAIL is a
@@ -38,12 +46,11 @@ What this reading chose:
   which would show up as a difference having nothing to do with seal.
   Pointed at the machine's real cache instead, so what the before/after
   comparison sees is only what the command under test did.
-- **`seal _tests-results` is not exercised here.** It renders JUnit
-  reports (junit.py), and a `tap` group -- what this project's own outcomes
-  are -- writes none; asserting on it against a fixture with nothing for it
-  to read would test a code path this promise does not turn on. The plainer
-  surface -- the verdict file itself -- is what a `tap`-only project's own
-  reporting would actually read, and what this checks.
+- **The verdict file is checked as well as the rendering.** It is what a
+  project's own reporting reads when it would rather not learn seal's
+  output shape at all, and it is the plainest form the finding takes. A
+  check that only asserted on the rendering would let the finding become
+  something only seal's own report can get at.
 - **A second run, after breaking a promise, repeats both checks.** The
   prompt does not say "nothing is published, on a green run" -- a failing
   run is held to the same boundary.
@@ -111,6 +118,40 @@ def body() -> None:
             f"a run touches nothing under its own $HOME -- nowhere here to keep a "
             f"credential or a session for anything it might have published: "
             f"before={sorted(before)} after={sorted(after)}",
+        )
+
+        reading, before_reading, after_reading = _run_with_empty_home(
+            fixture,
+            "_tests-results",
+            "--run",
+            "dev={}".format(fixture.root / "tests-results"),
+        )
+        expect(reading.status == 0, f"the run's findings can be read back:\n{reading}")
+        expect(
+            before_reading == after_reading,
+            f"and reading them publishes nothing: before={sorted(before_reading)} "
+            f"after={sorted(after_reading)}",
+        )
+
+        page = fixture.root / "report.html"
+        (fixture.root / "results.json").write_text(reading.stdout, encoding="utf-8")
+        rendered, before_render, after_render = _run_with_empty_home(
+            fixture,
+            "_report",
+            "--results",
+            str(fixture.root / "results.json"),
+            "--html",
+            str(page),
+        )
+        expect(rendered.status == 0, f"and rendered for a person to read:\n{rendered}")
+        expect(
+            before_render == after_render,
+            f"and rendering them publishes nothing either: before={sorted(before_render)} "
+            f"after={sorted(after_render)}",
+        )
+        expect(
+            page.is_file() and "a-promise" in page.read_text(encoding="utf-8"),
+            f"and the page names the promise it is about: {page}",
         )
 
         verdict_file = (

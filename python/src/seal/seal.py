@@ -152,7 +152,7 @@ from seal.codeowners import (
     find_codeowners,
     find_repository_root,
 )
-from seal import providers, tap_group
+from seal import providers, reporting, tap_group
 from seal.credentials import (
     Context,
     EMIT_ENV_SUBCOMMAND,
@@ -168,12 +168,16 @@ from seal.credentials import (
     parse_env_file,
     resolve,
 )
-from seal.junit import RunTests, read_run_tests, read_service_tests
+from seal.junit import read_run_tests, read_service_tests
 from seal.outcome_suite import (
     CONFIRMED,
     DEFAULT_RESULTS_DIR_NAME,
+    FAILED,
     NO_VERDICT,
+    OUTCOMES_RESULTS_SUBDIR,
+    PASSED,
     UNCONFIRMED,
+    UNTRANSLATED,
     VERDICT_FILENAME,
     RUN_PURPOSE,
     SELECTION_FILE,
@@ -382,10 +386,14 @@ def cmd_tests_results(args: list[str]) -> int:
     downloading an artifact and parsing XML -- and without this repository
     deciding how a project's results are presented.
 
-    It goes through junit.py, the same module `seal ci`'s own per-service
-    verdict comes from. A rendering that parsed the reports itself would be a
-    second answer to the question the gate already answered, free to disagree
-    with it.
+    Two readers, each owning what it already decided during the run. A
+    service's own tests are read by junit.py, the module `seal ci`'s
+    per-service verdict comes from; the outcome suite is read by
+    outcome_suite.py, where a promise's verdict comes from -- its own file
+    per promise, not a JUnit report, because a `tap` or `custom` runner
+    writes none (see /rfcs/0011-outcome-runners.md). A reading that parsed
+    the reports itself would be a second answer to a question the gate
+    already answered, free to disagree with it.
 
     Each `--run NAME=DIR` is one results directory and the name to file it
     under. The names are the caller's -- the workflow passes the overlay each
@@ -398,7 +406,24 @@ def cmd_tests_results(args: list[str]) -> int:
     """
     parser = argparse.ArgumentParser(prog="seal _tests-results")
     parser.add_argument("--run", action="append", metavar="NAME=DIR", required=True)
+    parser.add_argument(
+        "--outcomes-dir",
+        default=None,
+        help=(
+            "the project's outcome tree, relative to the project root. Every "
+            "promise it declares is reported, which is what lets a promise "
+            "that left no verdict be told from one that was never asked for."
+        ),
+    )
     parsed = parser.parse_args(args)
+
+    outcomes_dir = Path(
+        parsed.outcomes_dir or configured_outcomes_dir_name(os.environ)
+    )
+    # Read once, not per run: the tree is the same for every shape a
+    # pipeline verified -- what differs between them is the verdicts, which
+    # each run's own results directory holds.
+    declared = discover_outcomes(outcomes_dir)
 
     runs = {}
     for entry in parsed.run:
@@ -410,24 +435,38 @@ def cmd_tests_results(args: list[str]) -> int:
                 f"Error: --run names '{name}' twice, so one run's results would "
                 "silently replace the other's."
             )
-        runs[name] = _rendered_run(read_run_tests(Path(directory)))
+        runs[name] = _rendered_run(Path(directory), declared)
 
     print(json.dumps(runs, separators=(",", ":")))
     return 0
 
 
-def _rendered_run(run: RunTests) -> dict:
-    """One run as the plain data a consumer reads: the verdict, the counts,
-    and a line per source of reports.
+def _rendered_run(results_root: Path, declared: list[Outcome]) -> dict:
+    """One run as the plain data a consumer reads: the verdict, the counts, a
+    line per source of reports, and a line per promise.
 
     Written on one line of JSON, and deliberately small. What carries it has
     a size limit -- a workflow output, a pull-request comment, a summary --
     so the failed test *names* are capped while the failed test *count* never
     is: a listing that quietly got shorter is worse than one that says how
     much it left out.
+
+    Every promise is listed, uncapped, and that asymmetry is on purpose: one
+    broken thing produces hundreds of failed cases, while how many promises
+    a project has declared is bounded by what people wrote down and grows a
+    line at a time. A listing that dropped one would be indistinguishable
+    from a tree that never declared it, which is the claim /rfcs/0010 exists
+    to refuse.
     """
+    run = read_run_tests(results_root, exclude=(OUTCOMES_RESULTS_SUBDIR,))
+    outcomes = _rendered_outcomes(results_root, declared)
     return {
-        "passed": run.passed,
+        # Both halves, because a run is green only if both were: the
+        # services' own tests and every promise the suite read.
+        "passed": run.passed and outcomes["passed"],
+        # The services' own, not the suite's. An outcome's verdict is a
+        # promise kept or not, and adding it to a count of test cases would
+        # be adding two different units together.
         "cases": run.cases,
         "skipped": run.skipped,
         "failed": run.failed,
@@ -444,7 +483,169 @@ def _rendered_run(run: RunTests) -> dict:
             }
             for source in run.sources
         ],
+        "outcomes": outcomes,
     }
+
+
+def _rendered_outcomes(results_root: Path, declared: list[Outcome]) -> dict:
+    """Every promise, and what this run found out about it.
+
+    Named by headline as well as by slug: the headline is what the project
+    actually promises and the slug is only how the tree spells it, so a
+    reader who has never opened the tree can still tell what went red.
+
+    A promise that failed carries whatever its own results directory says
+    about *which* case failed, where its runner wrote a JUnit report. That is
+    extra detail rather than the verdict -- the verdict is the file
+    outcome_suite.py read -- so a runner writing no report is not a problem
+    here, which is exactly how it differs from a service whose tests came
+    back silent (see junit.py).
+    """
+    results = suite_results_for(declared, results_root)
+    counts = {
+        state: sum(1 for result in results if result.state == state)
+        for state in (PASSED, FAILED, NO_VERDICT, UNTRANSLATED)
+    }
+    problems = _outcome_result_problems(results_root, results)
+    return {
+        # A problem is as much a reason this is not green as a failure is:
+        # it says the verdicts cannot be believed, and "cannot be believed"
+        # must never render as "held".
+        "passed": not problems and not any(result.is_failure for result in results),
+        "counts": {state: count for state, count in counts.items() if count},
+        "quarantined": sum(1 for result in results if result.outcome.quarantined),
+        "problems": problems,
+        "promises": [
+            {
+                "slug": result.outcome.slug,
+                "headline": result.outcome.headline,
+                "state": result.state,
+                "quarantined": result.outcome.quarantined,
+                "failed": [
+                    case
+                    for case in read_service_tests(
+                        result.outcome.slug, result.results_dir
+                    ).failed[:MAX_RENDERED_FAILURES]
+                ]
+                if result.state == FAILED
+                else [],
+            }
+            for result in results
+        ],
+    }
+
+
+def suite_results_for(
+    declared: list[Outcome], results_root: Path
+) -> list[OutcomeResult]:
+    """What one run found out about every promise, in the tree's own order.
+
+    Takes the tree already discovered rather than discovering it again,
+    which is what lets several runs of one pipeline be read against one
+    reading of the tree they all verified.
+    """
+    return [result_for(outcome, results_root) for outcome in declared]
+
+
+def _outcome_result_problems(
+    results_root: Path, results: list[OutcomeResult]
+) -> list[str]:
+    """Reasons this run's promise-level results cannot be believed.
+
+    There is one, and it is the case where the tree and the results disagree
+    about whether the project has an outcome suite at all: a run that synced
+    verdicts back while nothing declares a promise means the report is being
+    rendered against a different tree from the one that ran. Reported rather
+    than passed over, because the alternative reads as a project that
+    promises nothing -- and a suite nobody declared is exactly what a green
+    gate must not be able to claim on a project's behalf.
+    """
+    if results:
+        return []
+    if (results_root / OUTCOMES_RESULTS_SUBDIR).is_dir():
+        return [
+            "an outcome suite's results came back from this run and no promise is "
+            "declared -- the tree read here is not the one that ran"
+        ]
+    return []
+
+
+def cmd_report(args: list[str]) -> int:
+    """Internal: what `seal _tests-results` printed, rendered for a person.
+
+    The page and the comment a pipeline publishes, written from the same
+    data the gate handed back (reporting.py). It is a separate command
+    from the reading above for the same reason reporting.py is a separate
+    module: reading a report is what decides a verdict, and rendering one
+    must never be in a position to reach a different one.
+
+    Nothing here talks to anything. It reads JSON and writes files, so the
+    same rendering can be uploaded as an artifact, written to a job
+    summary, or posted as a comment by whatever has the scopes to -- which
+    is the project's decision and not this command's (see
+    /rfcs/0015-reporting-what-a-run-found.md).
+
+    Not meant to be run directly.
+    """
+    parser = argparse.ArgumentParser(prog="seal _report")
+    parser.add_argument(
+        "--results",
+        required=True,
+        metavar="FILE",
+        help="what `seal _tests-results` printed; '-' reads stdin.",
+    )
+    parser.add_argument("--html", metavar="FILE", default=None)
+    parser.add_argument("--markdown", metavar="FILE", default=None)
+    parser.add_argument(
+        "--title",
+        default=reporting.DEFAULT_TITLE,
+        help="the heading both renderings carry.",
+    )
+    parser.add_argument(
+        "--source",
+        default="",
+        help=(
+            "what identifies the run this came from -- a commit, a branch, a "
+            "URL. Rendered verbatim on the page: only the caller knows what "
+            "names a run in whatever performed it."
+        ),
+    )
+    parsed = parser.parse_args(args)
+
+    if not parsed.html and not parsed.markdown:
+        raise SealError(
+            "Error: seal _report renders nothing unless --html or --markdown "
+            "names where to write it."
+        )
+
+    raw = sys.stdin.read() if parsed.results == "-" else Path(parsed.results).read_text(
+        encoding="utf-8"
+    )
+    try:
+        runs = json.loads(raw or "{}")
+    except ValueError as error:
+        raise SealError(
+            f"Error: the results are not JSON ({error}). They are what "
+            "`seal _tests-results` printed; a run that died before it could "
+            "print any hands back an empty string, which is reported as no "
+            "runs rather than rendered."
+        ) from error
+    if not isinstance(runs, dict):
+        raise SealError(
+            "Error: the results are a JSON object keyed by run, and this is "
+            f"a {type(runs).__name__}."
+        )
+
+    if parsed.html:
+        Path(parsed.html).write_text(
+            reporting.render_html(runs, title=parsed.title, source=parsed.source),
+            encoding="utf-8",
+        )
+    if parsed.markdown:
+        Path(parsed.markdown).write_text(
+            reporting.render_markdown(runs, title=parsed.title), encoding="utf-8"
+        )
+    return 0
 
 
 def _resolved_for(
@@ -1899,6 +2100,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_tests_verdict(rest)
         if subcommand == "_tests-results":
             return cmd_tests_results(rest)
+        if subcommand == "_report":
+            return cmd_report(rest)
         print(USAGE, file=sys.stderr)
         return 1
     except SealError as error:

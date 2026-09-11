@@ -164,8 +164,10 @@ inputs:
     description: >
       Name of the artifact this run uploads its results to -- every JUnit
       report and whatever else each run left in tests-results/, filed
-      under the overlay that produced it. Also reported as an output, so
-      a caller downloading it names it once.
+      under the overlay that produced it, plus the reading of all of them
+      (results.json) and a self-contained page of it (index.html,
+      report.md). Also reported as an output, so a caller downloading it
+      names it once.
 
       An artifact name has to be unique within a workflow run, so a
       caller that calls this workflow more than once (several projects in
@@ -715,6 +717,40 @@ runs:
         # syntax: a newline inside a rendered value is escaped by the JSON
         # itself.
         echo "results=$results" >> "$GITHUB_OUTPUT"
+        # And to a file, for the rendering below and for whoever downloads
+        # the artifact: an output is readable by this workflow run alone,
+        # and the reading is the part somebody coming back to a failed run
+        # wants next to the reports themselves.
+        mkdir -p "$RUNNER_TEMP/seal-results"
+        printf '%s\n' "$results" > "$RUNNER_TEMP/seal-results/results.json"
+
+    - name: Render what each run found
+      # A page, in the artifact this run already uploads. It publishes
+      # nothing and needs no scope: what it adds is that the results a
+      # project is handed can be read by a person as well as parsed by a
+      # workflow -- an artifact download is otherwise a directory of XML.
+      #
+      # Which check, comment or dashboard those results become is still the
+      # project's own decision, and `actions/report` is how a project that
+      # wants one asks for it (see /rfcs/0015-reporting-what-a-run-found.md
+      # at the repo root).
+      #
+      # Rendered by the CLI from what `seal _tests-results` printed, so the
+      # page cannot say a promise held where the gate said it broke: there
+      # is one reader of a report, and everything downstream renders what it
+      # said.
+      if: (!cancelled())
+      shell: bash
+      run: |
+        if [ ! -f "$RUNNER_TEMP/seal-results/results.json" ]; then
+          echo "The run failed before it could read what it found, so there is nothing to render."
+          exit 0
+        fi
+        uvx --from ${{ github.action_path }}/../../python seal _report \
+          --results "$RUNNER_TEMP/seal-results/results.json" \
+          --html "$RUNNER_TEMP/seal-results/index.html" \
+          --markdown "$RUNNER_TEMP/seal-results/report.md" \
+          --source "${{ github.repository }}@${{ github.sha }}"
 
     - name: Upload test results artifact
       uses: actions/upload-artifact@v7
@@ -724,9 +760,10 @@ runs:
         # The directory itself, not a glob of the files under it: that fixes
         # the artifact's internal root, so a caller always finds an overlay's
         # results at '<overlay>/<service>/junit.xml' no matter how many
-        # services this project has. A glob would instead root the artifact
-        # at whatever the matched files' deepest common ancestor happens to
-        # be, which shifts as services are added or removed.
+        # services this project has -- and the reading and the rendered page
+        # beside them at the root. A glob would instead root the artifact at
+        # whatever the matched files' deepest common ancestor happens to be,
+        # which shifts as services are added or removed.
         path: ${{ runner.temp }}/seal-results
         retention-days: ${{ inputs.results_retention_days }}
         # A run that failed before the first overlay produced anything is a

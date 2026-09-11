@@ -58,6 +58,10 @@ jobs:
     environment: dev
     permissions:
       contents: read
+    # Read by the reporting job below. An action's outputs belong to the
+    # step that ran it; a job's belong to whatever `needs:` it.
+    outputs:
+      results: ${{ steps.seal.outputs.results }}
     steps:
       - uses: actions/checkout@v6
 
@@ -75,6 +79,22 @@ jobs:
             curl -fsSL https://example.invalid/install.sh | bash
             echo "$SEAL_PROVIDER_TOKEN" | its-cli login
           provider_token: ${{ secrets.WHATEVER_YOUR_STORE_CALLS_ITS_TOKEN }}
+
+  # Optional, and a job of its own because the comment needs a write scope
+  # the gate has no business holding. Drop it and you still get the results,
+  # the reports and the rendered page in the artifact.
+  report:
+    needs: tests
+    if: (!cancelled()) && needs.tests.outputs.results != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: vdel/seal/actions/report@<ref>
+        with:
+          results: ${{ needs.tests.outputs.results }}
 ```
 
 Note what isn't there: **your application's variable and secret names**, and
@@ -103,23 +123,28 @@ repository, so the CLI is already beside it, at the revision `<ref>` names.
 | `credentials_env` | no | Which of your credentials environments this run reads -- which store each `.env` reference resolves against, per your own `seal-credentials-config.json`. Reaches `seal ci` as `SEAL_CREDENTIALS_ENV`. Left empty, your `default_env` applies. Deliberately independent of `k8s_overlay`: deriving one from the other would make a production-shaped overlay on a throwaway cluster reach real secrets. |
 | `results_artifact` | no | Name of the artifact the run uploads its results to. Defaults to `tests-results`. An artifact name has to be unique within a workflow run, so give each use its own name if you use this action more than once. |
 | `results_retention_days` | no | How long that artifact is kept. Defaults to 7: it exists for your own reporting job to read in the same run. |
-
 | `provider_token` | no | One credential for `provider_setup` to authenticate with, reaching it as `$SEAL_PROVIDER_TOKEN`. What it opens, and which store, is your project's business. Passed by value: read it from `secrets` in your own job, which is what binds the Environment it resolves against. |
 | `submodules_token` | no | Read access to whatever the checkout needs beyond your own repository -- a private git submodule your project vendors. `GITHUB_TOKEN` is scoped to the repository whose workflow is running and can read no other, so without this such a submodule fails to clone with a bare "Repository not found" before any later step runs. Nothing about Seal itself needs it: the CLI is this action's own repository, checked out beside it. |
 
 ## Outputs
 
-The action doesn't publish a report. It reads the JUnit reports its runs
-left behind and hands them back, so **how your results are presented is your
-project's decision** rather than one you inherit -- along with whichever
-third-party action implements it, the write scopes that action needs on your
-pull requests, and the kind of runner it happens to require.
+The action doesn't publish anything. It reads what its runs left behind and
+hands that back, so **which check, comment or dashboard your results become
+is your project's decision** rather than one you inherit -- along with
+whichever third-party action implements it, the write scopes that action
+needs on your pull requests, and the kind of runner it happens to require.
+
+What it does do is render: the artifact it uploads carries a readable page
+of the same results, and [`actions/report`](#one-comment-updated-in-place)
+is a separate, opt-in action that puts that rendering on the pull request.
+`/rfcs/0015-reporting-what-a-run-found.md` is where that line is drawn, and
+why.
 
 | Output | What it carries |
 | --- | --- |
 | `overlays` | The overlays this run verified, as a JSON list. What to matrix a per-shape report over. Empty if the run died before it could say which shapes it was going to run -- guard on that, because `fromJSON('')` fails the job reading it. |
 | `results` | What every run found, as one line of JSON keyed by overlay. `{}` when no run was asked to read anything (both switches off) -- an absence of reports by design, not a run that lost them, so the job's own status is the whole of what such a run says. |
-| `results_artifact` | Name of the artifact holding the reports themselves, laid out as `<overlay>/<service>/junit.xml`. Nothing is uploaded when a run failed before producing any results, so guard your download step. |
+| `results_artifact` | Name of the artifact holding the reports themselves, the reading, and the rendered page. Nothing is uploaded when a run failed before producing any results, so guard your download step. |
 
 `results` is shaped like this:
 
@@ -127,40 +152,129 @@ pull requests, and the kind of runner it happens to require.
 {
   "dev": {
     "passed": false,
-    "cases": 312,
+    "cases": 208,
     "skipped": 4,
-    "failed": 1,
+    "failed": 0,
     "problems": [],
     "sources": [
       {"name": "api", "passed": true, "cases": 208, "skipped": 4,
-       "failed": [], "failed_omitted": 0, "problems": []},
-      {"name": "outcomes", "passed": false, "cases": 12, "skipped": 0,
-       "failed": ["a-deleted-item-stays-deleted (todo-list/a-deleted-item-stays-deleted/junit.xml)"],
-       "failed_omitted": 0, "problems": []}
-    ]
+       "failed": [], "failed_omitted": 0, "problems": []}
+    ],
+    "outcomes": {
+      "passed": false,
+      "counts": {"PASS": 11, "FAIL": 1},
+      "quarantined": 0,
+      "problems": [],
+      "promises": [
+        {"slug": "ui/todo-list/an-added-item-shows-up",
+         "headline": "an added item shows up", "state": "PASS",
+         "quarantined": false, "failed": []},
+        {"slug": "ui/todo-list/a-deleted-item-stays-deleted",
+         "headline": "a deleted item stays deleted", "state": "FAIL",
+         "quarantined": false,
+         "failed": ["deleted.stays deleted (junit.xml)"]}
+      ]
+    }
   }
 }
 ```
 
-One `source` per directory a run's results came back in: each service under
-its own name, the outcome suite under `outcomes`. A `problem` is a reason
-the results can't be believed rather than a test that failed -- no report
-written, a report that didn't parse, a run that produced nothing at all --
-because a shape whose run died looks exactly like one whose tests all
-passed, and that is the claim a gate must never let a report make.
+Two halves, read by two different things -- the same two the run's own
+verdicts came from, so neither can disagree with what the gate concluded.
 
-It's read by the same `junit.py` the gate's own per-service verdict comes
-from, so it can't say a test passed where the run said it failed. The failed
-*names* are capped per source (a job output is a string with a size limit)
-and `failed_omitted` says how many were left out; the failed *count* is never
-capped.
+**`sources`** is one entry per service whose own tests came back, under its
+own name. A `problem` is a reason the results can't be believed rather than a
+test that failed -- no report written, a report that didn't parse, a run that
+produced nothing at all -- because a shape whose run died looks exactly like
+one whose tests all passed, and that is the claim a gate must never let a
+report make. The failed *names* are capped per source (a job output is a
+string with a size limit) and `failed_omitted` says how many were left out;
+the failed *count* is never capped.
 
-### Doing something with them
+**`outcomes`** is every promise your tree declares, in one of four `state`s:
 
-A summary needs no permissions at all:
+| `state` | Means |
+| --- | --- |
+| `PASS` | The promise held. |
+| `FAIL` | It didn't. |
+| `no verdict` | It has a test, and nothing here knows whether it ran -- which is a failure, not an absence. |
+| `no test yet` | Nothing has been translated from it. An ordinary state to sit in, and not a reason the run is red. |
+
+A promise is named by its prompt's headline as well as by its slug, because
+the headline is what your project actually promises. `quarantined` marks one
+the suite has been told not to gate on: it is still reported, and still not
+reported as passed. `failed` carries which case gave way, where that
+promise's runner also wrote a JUnit report -- detail beside the verdict, not
+the verdict itself, which is the file the runner wrote.
+
+`passed` at the top is both halves together: every service's own tests, and
+every promise the suite read.
+
+### What's in the artifact
+
+| Path | What it is |
+| --- | --- |
+| `<overlay>/<service>/junit.xml` | Each service's own report, as its test stage wrote it. `coverage.xml` and anything else it produced sits beside it, untouched. |
+| `<overlay>/outcomes/<group>/<epic>/<outcome>/` | One directory per promise: the `passed` verdict its container wrote, and whatever else its runner left there. |
+| `results.json` | The `results` output above, as a file -- for whoever opens the artifact rather than the workflow run. |
+| `index.html` | A self-contained page: every promise and its state, every service, every failure. Open it from the extracted artifact; it fetches nothing. |
+| `report.md` | The same thing as Markdown, which is what `actions/report` posts. |
+
+### One comment, updated in place
+
+`actions/report` renders the reading into the job's summary and keeps a
+single comment on the pull request current -- replaced on every run rather
+than added to, so twenty pushes leave one report instead of twenty stale
+ones.
+
+It is a separate action, used from a job of your own, because the comment
+needs `pull-requests: write` and the gate has no business holding it:
 
 ```yaml
   report:
+    needs: tests
+    if: (!cancelled()) && needs.tests.outputs.results != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+    - uses: actions/checkout@v6
+    - uses: vdel/seal/actions/report@<ref>
+      with:
+        results: ${{ needs.tests.outputs.results }}
+```
+
+| Input | Required | Meaning |
+| --- | --- | --- |
+| `results` | yes | The `results` output of `actions/ci`, passed through verbatim. An empty string is reported as a run that produced nothing -- which is what it was. |
+| `title` | no | The heading both renderings carry. Defaults to `Seal test results`. |
+| `comment` | no | Whether to post and update the pull-request comment. `'true'` by default; compared as a string, so anything else turns it off. |
+| `comment_key` | no | Which comment a run replaces. Defaults to `default`. Give each use its own if you gate two projects in one workflow, or each will overwrite the other's report. |
+| `job_summary` | no | Whether to write the rendering to this job's summary page. `'true'` by default, and needs no permissions. |
+| `source` | no | What names the run -- a commit, a branch, a URL. Rendered verbatim on the page. |
+| `token` | no | What the comment authenticates as. Defaults to the job's own `GITHUB_TOKEN`. |
+
+It outputs `comment_url`, empty where it commented nothing.
+
+Two behaviours worth knowing:
+
+- **A pull request from a fork gets no comment.** GitHub gives such a run a
+  read-only token whatever your job's `permissions` say, so the action warns
+  and carries on rather than failing an outside contribution over a comment
+  that was never possible. The summary and the artifact still have the
+  report. Anywhere else, a refused comment fails the job and names the scope
+  you're missing.
+- **A run with no pull request comments nothing.** A push to a branch, a
+  schedule, a manual run: there is nowhere to comment, which isn't a
+  failure.
+
+### Doing something else with them
+
+A summary of your own needs no permissions at all:
+
+```yaml
+  summary:
     needs: tests
     if: (!cancelled()) && needs.tests.outputs.results != ''
     runs-on: ubuntu-latest
@@ -175,10 +289,9 @@ A summary needs no permissions at all:
         PY
 ```
 
-A check per shape, or a comment on the pull request, wants the XML rather
-than the reading of it -- download the artifact and point whichever action
-you like at it, granting *that* job the `checks: write` /
-`pull-requests: write` it needs:
+A check run per shape wants the XML rather than the reading of it -- download
+the artifact and point whichever action you like at it, granting *that* job
+the `checks: write` it needs:
 
 ```yaml
     # in a job matrixing over fromJSON(needs.tests.outputs.overlays), so each
@@ -196,13 +309,10 @@ you like at it, granting *that* job the `checks: write` /
         check_name: "Test Results (${{ matrix.overlay }})"
 ```
 
-The artifact is also where coverage lives: `results` covers JUnit reports,
-and a service's `coverage.xml` sits beside its `junit.xml` untouched.
-
-The two are worth having together. A check carries the detail -- which test
-failed, and what it said -- and `results` carries what no report can, because
-a shape whose run died before writing one has nothing to publish a check
-from: `problems` names it, and the check would simply not appear.
+Reading and reports are worth having together. A check carries the per-case
+detail, and `results` carries what no report can, because a shape whose run
+died before writing one has nothing to publish a check from: `problems` names
+it, and the check would simply not appear.
 
 `.github/workflows/internal-example.yml` in this repository is a worked
 caller doing both.

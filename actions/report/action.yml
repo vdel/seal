@@ -1,0 +1,279 @@
+name: Seal report
+description: >
+  Render what a Seal CI run found into this job's summary and into one
+  pull-request comment that is updated in place on every run.
+
+# The presentation half, and a separate action from `ci` on purpose.
+#
+# `ci` establishes what held and hands it back; which check, comment or
+# dashboard that becomes is the project's decision (see
+# /rfcs/0015-reporting-what-a-run-found.md at the repo root). So this exists
+# and is never reached for on a project's behalf: a caller adds it to a job
+# of its own, and that job grants the `pull-requests: write` the comment
+# needs. An adopting project that wants no comment simply doesn't use it,
+# and inherits neither the scope nor the reporting.
+#
+# It is a published action rather than a snippet in the worked example for
+# the same reason `ci` is: a capability a project would have to copy out of
+# `examples/` is a capability in the wrong place. The renderer is the `seal`
+# CLI, which lives in this repository -- so `uses:` checks it out beside
+# this file, at the same revision, needing no credential and unable to drift
+# from it.
+#
+# Nothing here reads a report. It renders what the `results` output of
+# `actions/ci` already says, so a comment cannot claim a promise held where
+# the gate said it broke.
+
+inputs:
+  results:
+    description: >
+      What every run found: the `results` output of `actions/ci`, passed
+      through verbatim.
+
+      An empty string is a run that died before it could read anything,
+      and is reported as exactly that rather than as a run with nothing
+      wrong -- which is the one claim a report must never be readable as.
+    required: true
+  title:
+    description: >
+      The heading both renderings carry. Give each use its own when a
+      repository runs the gate more than once in a workflow, so a reader
+      can tell which project's results they are looking at.
+    required: false
+    default: 'Seal test results'
+  comment:
+    description: >
+      Whether to post -- and on later runs update -- one comment on the
+      pull request this run belongs to. Read as the string "true"; anything
+      else, the literal "false" included, comments nothing.
+
+      The calling job needs `pull-requests: write` for it. Nothing happens
+      on a run with no pull request attached (a push to a branch, a
+      schedule): there is nowhere to comment, which is not a failure.
+    required: false
+    default: 'true'
+  comment_key:
+    description: >
+      Which comment this run updates. The comment carries a marker holding
+      this value, and a run replaces the comment whose marker matches --
+      so two uses of this action on one pull request keep two comments by
+      giving each its own key, and one use keeps one comment however many
+      times it runs.
+    required: false
+    default: 'default'
+  job_summary:
+    description: >
+      Whether to write the rendering to this job's own summary -- the page
+      GitHub shows for the run. Read as the string "true". Needs no
+      permissions at all.
+    required: false
+    default: 'true'
+  source:
+    description: >
+      What names the run these results came from -- a commit, a branch, a
+      URL. Empty by default, and rendered verbatim when given: only the
+      caller knows what identifies a run in whatever performed it.
+    required: false
+    default: ''
+  token:
+    description: >
+      What the comment authenticates as. Defaults to the job's own
+      `GITHUB_TOKEN`, which is what a caller granting `pull-requests:
+      write` already has; pass another only where the comment has to come
+      from somewhere else.
+    required: false
+    default: ''
+
+outputs:
+  comment_url:
+    description: "The comment this run posted or updated, empty where it commented nothing."
+    value: ${{ steps.comment.outputs.url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      # No separate `actions/setup-python`: `seal` is invoked through `uvx`
+      # below, and uv provisions an interpreter matching python/'s own
+      # requires-python itself.
+      uses: astral-sh/setup-uv@v8.1.0
+
+    - name: Render what the run found
+      env:
+        # Through the environment, never interpolated into the script: the
+        # results carry test names and promise headlines, which are
+        # whatever somebody called a test.
+        SEAL_RESULTS: ${{ inputs.results }}
+        SEAL_REPORT_TITLE: ${{ inputs.title }}
+        SEAL_REPORT_SOURCE: ${{ inputs.source }}
+      shell: bash
+      run: |
+        printf '%s' "$SEAL_RESULTS" > "$RUNNER_TEMP/seal-results.json"
+        uvx --from ${{ github.action_path }}/../../python seal _report \
+          --results "$RUNNER_TEMP/seal-results.json" \
+          --markdown "$RUNNER_TEMP/seal-report.md" \
+          --title "$SEAL_REPORT_TITLE" \
+          --source "$SEAL_REPORT_SOURCE"
+
+    - name: Write it to this job's summary
+      # Compared against the string, never read for truthiness: every input
+      # an action receives is a string, so `if: inputs.job_summary` is true
+      # for the literal "false".
+      if: (!cancelled()) && inputs.job_summary == 'true'
+      shell: bash
+      run: cat "$RUNNER_TEMP/seal-report.md" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Post or update the pull request's comment
+      id: comment
+      if: (!cancelled()) && inputs.comment == 'true'
+      env:
+        GH_TOKEN: ${{ inputs.token || github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        # Empty on a run with no pull request attached, which the script
+        # reports and exits on. Read from the event rather than from a
+        # caller-supplied number: the pull request a run belongs to is not
+        # something a caller should have to work out.
+        SEAL_PULL_NUMBER: ${{ github.event.pull_request.number }}
+        # Whether this pull request came from a fork. GitHub gives a
+        # workflow triggered by one a read-only token however the job
+        # declares its permissions, so a refused comment there is the
+        # platform working as intended rather than a misconfiguration --
+        # and the script below has to tell those two apart to know whether
+        # to fail.
+        SEAL_PULL_FROM_FORK: ${{ github.event.pull_request.head.repo.fork }}
+        SEAL_COMMENT_KEY: ${{ inputs.comment_key }}
+      shell: bash
+      run: |
+        uv run --no-project python - <<'PY' >> "$GITHUB_OUTPUT"
+        """One comment per key, updated in place.
+
+        Updated rather than added to, because a pull request iterated on
+        twenty times would otherwise carry twenty reports and the reader has
+        to work out which is current. The marker below is how a run finds
+        the one it wrote last time; it is a comment in the Markdown sense,
+        so it identifies the comment without being part of what anybody
+        reads.
+
+        Through the REST API directly rather than a CLI: this runs on
+        whichever runner the calling job chose, and `gh` ships with GitHub's
+        hosted images and not with every self-hosted one.
+        """
+        import json, os, sys, urllib.error, urllib.request
+
+        # GitHub truncates an issue comment past this, with nothing to say
+        # it did. The renderer's own caps keep a normal report far inside it
+        # (see python/src/seal/reporting.py); this is the backstop for a
+        # suite nobody anticipated, and it says what it cut.
+        LIMIT = 65000
+
+        api = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+        repository = os.environ["GITHUB_REPOSITORY"]
+        number = os.environ.get("SEAL_PULL_NUMBER", "").strip()
+        token = os.environ["GH_TOKEN"]
+        marker = "<!-- seal-report: {} -->".format(os.environ["SEAL_COMMENT_KEY"])
+
+        # Written exactly once, on every path out of here: a caller
+        # reading `comment_url` gets an empty string where nothing was
+        # commented, never a missing key to guess at.
+        def commented(url=""):
+            print("url=" + url)
+            raise SystemExit(0)
+
+
+        if not number:
+            print(
+                "No pull request is attached to this run, so there is nowhere to "
+                "comment.",
+                file=sys.stderr,
+            )
+            commented()
+
+        with open(os.environ["RUNNER_TEMP"] + "/seal-report.md", encoding="utf-8") as f:
+            rendering = f.read()
+        body = marker + "\n\n" + rendering
+        if len(body) > LIMIT:
+            cut = "\n\n_Truncated: the full report is in this run's results artifact._\n"
+            body = body[: LIMIT - len(cut)] + cut
+
+
+        def call(method, url, payload=None):
+            request = urllib.request.Request(
+                url,
+                method=method,
+                data=json.dumps(payload).encode() if payload is not None else None,
+                headers={
+                    "Authorization": "Bearer " + token,
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                    "Content-Type": "application/json",
+                    "User-Agent": "seal-report",
+                },
+            )
+            with urllib.request.urlopen(request) as response:
+                return json.loads(response.read() or "null")
+
+
+        issues = "{}/repos/{}/issues".format(api, repository)
+
+
+        def already_there():
+            """The comment this action wrote last time, or None.
+
+            Paged rather than taking the first hundred: a long-running pull
+            request accumulates review comments, and the one this run wrote
+            last time is the *oldest* of them -- so reading a single page is
+            exactly the case that silently starts posting a second comment
+            per run.
+            """
+            page = 1
+            while True:
+                batch = call(
+                    "GET", "{}/{}/comments?per_page=100&page={}".format(issues, number, page)
+                )
+                if not batch:
+                    return None
+                found = next((c for c in batch if marker in (c.get("body") or "")), None)
+                if found:
+                    return found
+                page += 1
+
+        # The listing is inside the same `try` as the write, because it is
+        # refused for the same reasons and a reader needs the same
+        # explanation: a traceback about a 403 from a URL says nothing about
+        # which scope was missing.
+        try:
+            existing = already_there()
+            if existing:
+                posted = call("PATCH", "{}/comments/{}".format(issues, existing["id"]), {"body": body})
+            else:
+                posted = call("POST", "{}/{}/comments".format(issues, number), {"body": body})
+        except urllib.error.HTTPError as error:
+            if error.code not in (403, 404):
+                raise
+            # A refusal means one of two different things, and they are
+            # worth saying differently. A pull request from a fork gets a
+            # read-only token no matter what the job asks for, so there was
+            # never a comment to be had and failing the run would fail every
+            # outside contribution. Anywhere else, the scope simply was not
+            # granted -- which is the caller's to fix, and is worth failing
+            # on rather than leaving as a report nobody notices is missing.
+            if os.environ.get("SEAL_PULL_FROM_FORK", "").lower() == "true":
+                print(
+                    "::warning::No comment on {}#{}: a pull request from a fork "
+                    "gets a read-only token, whatever the job's permissions say. "
+                    "The report is in this run's summary and its results "
+                    "artifact.".format(repository, number),
+                    file=sys.stderr,
+                )
+                commented()
+            print(
+                "::error::Cannot comment on {}#{} ({}). The job using seal's "
+                "report action needs `permissions: pull-requests: write`.".format(
+                    repository, number, error.code
+                ),
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
+        commented(posted["html_url"])
+        PY

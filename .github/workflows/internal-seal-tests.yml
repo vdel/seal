@@ -30,11 +30,13 @@ on:
       # the tree to the rules every adopting project's is held to, so a
       # change to it has to run the job that checks it.
       - 'outcomes/**'
-      # The workflows, wholesale: the suite reads actions/ci -- holding it
-      # to the flags the Tilt extension defines, and to every run being one
-      # `seal ci` a person can type -- and this file decides what the suite
-      # runs on at all. A change to either is checked by the guard that
-      # covers it.
+      # The published actions and the workflows, wholesale: the suite reads
+      # both -- holding actions/ci to the flags the Tilt extension defines
+      # and to every run being one `seal ci` a person can type, and running
+      # actions/report's own comment script against a stub API -- and this
+      # file decides what the suite runs on at all. A change to any of them
+      # is checked by the guard that covers it.
+      - 'actions/**'
       - '.github/workflows/**'
   pull_request:
     paths:
@@ -50,11 +52,13 @@ on:
       # the tree to the rules every adopting project's is held to, so a
       # change to it has to run the job that checks it.
       - 'outcomes/**'
-      # The workflows, wholesale: the suite reads actions/ci -- holding it
-      # to the flags the Tilt extension defines, and to every run being one
-      # `seal ci` a person can type -- and this file decides what the suite
-      # runs on at all. A change to either is checked by the guard that
-      # covers it.
+      # The published actions and the workflows, wholesale: the suite reads
+      # both -- holding actions/ci to the flags the Tilt extension defines
+      # and to every run being one `seal ci` a person can type, and running
+      # actions/report's own comment script against a stub API -- and this
+      # file decides what the suite runs on at all. A change to any of them
+      # is checked by the guard that covers it.
+      - 'actions/**'
       - '.github/workflows/**'
 
 jobs:
