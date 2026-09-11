@@ -8,10 +8,10 @@ description: >
 # tests inside its running container -- run the project's outcome suite
 # against the environment that just came up, and hand back what every run
 # found. So a green run means two things: the environment came up, and every
-# promise the project has translated still holds. A project can ask for either
-# half alone -- `run_service_tests` and `run_outcomes`, below, one of which
-# has to stay on -- which is a faster check to have beside the gate rather
-# than a gate of its own.
+# promise the project has translated still holds. `run_service_tests` and
+# `run_outcomes`, below, say whether a run reads either -- a faster check to
+# have beside the gate rather than a gate of its own, down to one that reads
+# neither and gates on readiness alone.
 #
 # What makes that a usable merge gate is `seal ci` exiting successfully only
 # once *every* resource is ready -- so it refuses to start at all until each
@@ -95,8 +95,13 @@ inputs:
       It also leaves `additional_k8s_overlays` nothing to do: those runs
       build images that carry no test suite, so the promises are the only
       thing they read. Asking for both is refused rather than deploying
-      shapes that would assert nothing -- as is turning this off alongside
-      `run_service_tests`, which leaves a run with nothing to read.
+      shapes that would assert nothing.
+
+      Off alongside `run_service_tests` it leaves a run that reads nothing
+      and gates on readiness alone: the images build, the manifests apply,
+      every resource comes up. Allowed deliberately, for the emergency
+      where that is the question. No results come back from such a run, so
+      the job's own status is the whole of what it says.
     required: false
     default: 'true'
   publish_images:
@@ -207,7 +212,11 @@ outputs:
     description: "Every overlay this run verified, as a JSON array -- what a caller fans a per-overlay job out over."
     value: ${{ steps.plan.outputs.overlays }}
   results:
-    description: "What every run found, for a caller to report however it presents results."
+    description: >
+      What every run found, for a caller to report however it presents
+      results. `{}` when no run was asked to read anything -- a run with
+      both `run_service_tests` and `run_outcomes` off -- which is an
+      absence of reports by design rather than a run that lost them.
     value: ${{ steps.collect.outputs.results }}
   results_artifact:
     description: "The name this run uploaded its results under, so a caller downloading it names it once."
@@ -309,7 +318,8 @@ runs:
       # And each of the two halves a run can switch off is checked against
       # the two words it takes, so a third one is refused instead of reading
       # as "not true" -- verifying less is a thing a run says, never
-      # something a typo does.
+      # something a typo does. Both off is a run that gates on readiness
+      # alone, which is allowed and says so where it runs.
       env:
         PRIMARY_K8S_OVERLAY: ${{ inputs.k8s_overlay }}
         ADDITIONAL_K8S_OVERLAYS: ${{ inputs.additional_k8s_overlays }}
@@ -332,14 +342,6 @@ runs:
 
         run_service_tests = switch("run_service_tests")
         run_outcomes = switch("run_outcomes")
-
-        if run_service_tests == "false" and run_outcomes == "false":
-            sys.exit(
-                "run_service_tests and run_outcomes are both false, which "
-                "leaves a run that reads nothing: it would build the images, "
-                "deploy the shape, wait for every resource to be ready and "
-                "report no results at all. Turn one of them back on."
-            )
 
         raw = os.environ["ADDITIONAL_K8S_OVERLAYS"].strip() or "[]"
         try:
@@ -577,6 +579,12 @@ runs:
         if [ "$RUN_OUTCOMES" = "false" ]; then
           outcomes=(--run_outcomes false)
         fi
+        # Said where the run happens, because a run reading neither half is
+        # not the merge gate and nothing in its results will say so -- it has
+        # none. What it still gates on is every resource coming up.
+        if [ "$RUN_SERVICE_TESTS" = "false" ] && [ "$RUN_OUTCOMES" = "false" ]; then
+          echo "::warning::Neither the service tests nor the promises are being read. This run gates on readiness alone."
+        fi
         "$RUNNER_TEMP/fresh-cluster.sh"
         status=0
         uvx --from ${{ github.action_path }}/../../python seal ci -- \
@@ -663,6 +671,8 @@ runs:
       working-directory: ${{ inputs.project_dir }}
       env:
         PRIMARY_K8S_OVERLAY: ${{ inputs.k8s_overlay }}
+        RUN_SERVICE_TESTS: ${{ inputs.run_service_tests }}
+        RUN_OUTCOMES: ${{ inputs.run_outcomes }}
       shell: bash
       run: |
         # Through the CLI, not a parser of this file's own: `seal
@@ -674,13 +684,28 @@ runs:
         # Each --run names one results directory and the overlay to file it
         # under. A directory that isn't there -- a shape whose run died
         # before producing anything -- is rendered as a run that produced
-        # nothing, which is a failure rather than an absence.
-        runs=(--run "$PRIMARY_K8S_OVERLAY=$RUNNER_TEMP/seal-results/$PRIMARY_K8S_OVERLAY")
+        # nothing, which is a failure rather than an absence. That is exactly
+        # the claim a gate's results must never be readable as, and it is
+        # also why a run asked to read neither half is not named here at all:
+        # it has no reports by design, which is a different thing from having
+        # lost them, and only this file knows which of the two it is.
+        runs=()
+        if [ "$RUN_SERVICE_TESTS" = "true" ] || [ "$RUN_OUTCOMES" = "true" ]; then
+          runs+=(--run "$PRIMARY_K8S_OVERLAY=$RUNNER_TEMP/seal-results/$PRIMARY_K8S_OVERLAY")
+        fi
         if [ -f "$RUNNER_TEMP/additional-overlays" ]; then
           while read -r overlay; do
             [ -n "$overlay" ] || continue
             runs+=(--run "$overlay=$RUNNER_TEMP/seal-results/$overlay")
           done < "$RUNNER_TEMP/additional-overlays"
+        fi
+        if [ ${#runs[@]} -eq 0 ]; then
+          # No run was asked to report anything, so there is nothing to
+          # render and nothing a reader could mistake for a run that lost its
+          # reports. Such a run says what it found through the job's own
+          # status, which is the whole of what a readiness gate has to say.
+          echo 'results={}' >> "$GITHUB_OUTPUT"
+          exit 0
         fi
         # Assigned before it is written, so a command that failed fails the
         # step: `echo "results=$(...)"` would report the echo's own success

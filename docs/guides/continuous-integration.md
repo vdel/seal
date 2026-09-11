@@ -28,6 +28,11 @@ promises were held to the gate and which weren't. Because that file lives in
 the outcome's own directory, adding one needs a code owner exactly as
 editing the test would.
 
+Both claims are the default, and either can be switched off for a run --
+see [`run_service_tests` and `run_outcomes`](#inputs) below. A run with one
+of them off is a faster check to have *beside* the gate rather than the gate
+itself; with both off it gates on readiness alone.
+
 It never touches a real cluster: the job creates a throwaway Kind cluster
 and discards it.
 
@@ -90,7 +95,7 @@ repository, so the CLI is already beside it, at the revision `<ref>` names.
 | `k8s_overlay` | yes | Which of your Kubernetes overlays the gate deploys. The run against this one also executes each service's own tests, so name the shape you bring up locally -- a gate on a shape nobody can reproduce is one nobody can act on. |
 | `additional_k8s_overlays` | no | Further overlays to verify your promises against, as a JSON list -- `'["prod-like"]'`. Each runs the outcome suite alone, against the images a real environment runs. Empty by default. |
 | `run_service_tests` | no | Whether the run on `k8s_overlay` executes each service's own tests -- `true` or `false`, `true` by default. It is the only run that can: a suite runs inside the service's container, so it lives only in images built at `--build_type test`, and this input is what decides which kind that run builds. Off, it builds what a real environment runs and reads your promises against that. |
-| `run_outcomes` | no | Whether these runs read your promises -- `true` or `false`, `true` by default. Turned off, what is left is each service's own tests and the readiness gate: a faster check to have *beside* the gate, never one to have instead of it. It also leaves `additional_k8s_overlays` nothing to verify, so naming both is refused -- as is turning it off alongside `run_service_tests`, which leaves a run with nothing to read at all. |
+| `run_outcomes` | no | Whether these runs read your promises -- `true` or `false`, `true` by default. Turned off, what is left is each service's own tests and the readiness gate: a faster check to have *beside* the gate, never one to have instead of it. It also leaves `additional_k8s_overlays` nothing to verify, so naming both is refused. Off alongside `run_service_tests` it leaves a run that reads nothing and gates on readiness alone -- allowed deliberately, for the emergency where that is the question. |
 | `publish_images` | yes | Whether to push the images built, once every gate above has passed. |
 | `publish_k8s_overlay` | when publishing | Which overlay the publishing run deploys. Publishing means deploying and letting Tilt push what it built, so it still names a shape -- the one the deployment will use. |
 | `ref` | no | Branch or SHA to check out. Defaults to the triggering ref. |
@@ -113,7 +118,7 @@ pull requests, and the kind of runner it happens to require.
 | Output | What it carries |
 | --- | --- |
 | `overlays` | The overlays this run verified, as a JSON list. What to matrix a per-shape report over. Empty if the run died before it could say which shapes it was going to run -- guard on that, because `fromJSON('')` fails the job reading it. |
-| `results` | What every run found, as one line of JSON keyed by overlay. |
+| `results` | What every run found, as one line of JSON keyed by overlay. `{}` when no run was asked to read anything (both switches off) -- an absence of reports by design, not a run that lost them, so the job's own status is the whole of what such a run says. |
 | `results_artifact` | Name of the artifact holding the reports themselves, laid out as `<overlay>/<service>/junit.xml`. Nothing is uploaded when a run failed before producing any results, so guard your download step. |
 
 `results` is shaped like this:
@@ -291,12 +296,14 @@ same revision.
 6. Runs the gate on `k8s_overlay`: `uvx --from <the action's own python/> seal ci --
    --k8s_overlay <k8s_overlay> --build_type test`. This is the run that also
    executes each service's own tests, because `test` is the build kind whose
-   images carry them. The two halves of what it verifies are yours to switch
-   off, one at a time: `run_service_tests: false` builds `--build_type
-   runtime` instead, leaving the promises and the readiness gate, and
-   `run_outcomes: false` appends `--run_outcomes false`, leaving the service
-   tests and the readiness gate. Either way it stays one `seal ci` you can
-   type.
+   images carry them. Both halves of what it verifies are yours to switch
+   off: `run_service_tests: false` builds `--build_type runtime` instead,
+   leaving the promises and the readiness gate, and `run_outcomes: false`
+   appends `--run_outcomes false`, leaving the service tests and the
+   readiness gate. Off together they leave the readiness gate alone -- the
+   images build, the manifests apply, every resource comes up -- which the
+   run says in a warning, since no results come back to say it for them.
+   Every one of the four is one `seal ci` you can type.
 7. Runs the gate again on each of `additional_k8s_overlays`, at
    `--build_type runtime` -- the images a real environment runs, which carry
    no test suite, so these runs verify the promises alone.

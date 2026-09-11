@@ -170,15 +170,25 @@ def test_a_value_the_action_does_not_know_is_refused(switch):
     assert 'switch("{}")'.format(switch) in plan["run"]
 
 
-def test_a_run_that_would_read_nothing_is_refused():
-    """Both halves off leaves a run that builds images, deploys a shape,
-    waits for it and reports nothing -- which the results a caller is handed
-    render as a run that produced nothing, i.e. as a failure. Refused where
-    the other incoherent combinations are, before there is a cluster to spend
-    on it."""
+def test_a_run_can_read_neither_half_and_gate_on_readiness_alone():
+    """Both halves off is allowed on purpose -- the emergency where the
+    question is only whether the thing comes up. The run is not refused, it
+    says out loud what it is, and the results a caller is handed do not claim
+    it produced nothing: an absence of reports by design is not the same
+    thing as a run that lost them, and only this file knows which it is."""
     plan = next(step for step in _steps() if step.get("id") == "plan")
+    assert "both false" not in plan["run"]
 
-    assert "run_service_tests and run_outcomes are both false" in plan["run"]
+    gate = _gate_step()
+    assert "::warning::" in gate["run"]
+    assert "gates on readiness alone" in gate["run"]
+
+    collect = next(step for step in _steps() if step.get("id") == "collect")
+    # Named to `seal _tests-results` only when something was asked of it: a
+    # results directory that is not there is rendered as a failure, which is
+    # the right reading for a run that died and the wrong one for this.
+    assert '[ "$RUN_SERVICE_TESTS" = "true" ] || [ "$RUN_OUTCOMES" = "true" ]' in collect["run"]
+    assert "results={}" in collect["run"]
 
 
 def test_further_shapes_with_the_promises_off_is_refused():
