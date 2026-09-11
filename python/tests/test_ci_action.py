@@ -561,6 +561,43 @@ def test_every_published_recording_is_reachable_from_the_promise_that_broke():
     assert outputs["recordings"]["value"] == "${{ steps.recordings.outputs.published }}"
 
 
+@pytest.mark.parametrize("when", ["failure", "success"])
+def test_a_project_says_which_runs_are_recorded(inputs, when):
+    """Two switches rather than one, because they answer different questions:
+    a failure's recording is what somebody needs to understand a red promise,
+    and a passing run's is for checking the suite exercises what somebody
+    thinks it does."""
+    name = "record_outcome_video_on_{}".format(when)
+
+    assert inputs[name]["required"] is False
+    # No `type:`: an action's inputs are strings, and the extension compares
+    # this against the two words it takes rather than reading it for
+    # truthiness.
+    assert "type" not in inputs[name]
+
+
+def test_the_recording_switches_reach_every_run_that_reads_a_promise():
+    """Passed through to the extension rather than acted on here: what the
+    pair means is one answer, and it lives beside the config that generates
+    the runner (tilt/seal/config.Tiltfile). A run that reads no promise
+    records nothing whatever they say."""
+    gates = [
+        step
+        for step in _steps()
+        if SEAL_CI in str(step.get("run", ""))
+        and "publish_images" not in str(step.get("run", ""))
+    ]
+
+    assert gates, "no gate run to record"
+    for step in gates:
+        for when in ("failure", "success"):
+            flag = "--record_outcome_video_on_{}".format(when)
+            assert flag in step["run"], step["name"]
+            assert step["env"]["VIDEO_ON_{}".format(when.upper())] == (
+                "${{{{ inputs.record_outcome_video_on_{} }}}}".format(when)
+            )
+
+
 def test_publishing_recordings_can_be_turned_off():
     """It costs an upload per broken promise and sends the recording's bytes
     twice, since it stays in the results artifact where the page that plays

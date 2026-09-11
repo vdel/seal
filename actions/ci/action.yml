@@ -174,6 +174,33 @@ inputs:
       one repository, say) gives each call its own name.
     required: false
     default: 'tests-results'
+  record_outcome_video_on_failure:
+    description: >
+      Whether a promise the run does not see kept keeps a video of its
+      browser -- "true" or "false".
+
+      This is what a red promise costs somebody: an assertion that timed out
+      waiting for a selector reads the same whether the page never loaded,
+      loaded the wrong thing, or loaded the right thing behind a dialog, and
+      only a recording tells them apart. Reaches the runner as
+      `seal ci -- --record_outcome_video_on_failure`.
+    required: false
+    default: 'true'
+  record_outcome_video_on_success:
+    description: >
+      Whether a promise the run *does* see kept keeps one too -- "true" or
+      "false".
+
+      For checking that a suite exercises what somebody thinks it does: a
+      test can pass through the wrong page. It costs a video per promise on
+      every green run, kept and uploaded, which is why it is worth turning
+      off once a suite is trusted.
+
+      Nothing records a pass and discards a failure, so this without
+      `record_outcome_video_on_failure` is refused rather than quietly
+      keeping both.
+    required: false
+    default: 'true'
   publish_recordings:
     description: >
       Whether to publish each broken promise's recording under an address of
@@ -573,6 +600,8 @@ runs:
         # python/src/seal/providers.py). Empty leaves the project's own
         # `default_env` to say.
         SEAL_CREDENTIALS_ENV: ${{ inputs.credentials_env }}
+        VIDEO_ON_FAILURE: ${{ inputs.record_outcome_video_on_failure }}
+        VIDEO_ON_SUCCESS: ${{ inputs.record_outcome_video_on_success }}
         # Tells cached_docker_build() (tilt/docker_build at the repo root) to
         # build via buildx with GitHub Actions layer caching instead of
         # Tilt's plain docker_build(). Local `tilt up` never sets this.
@@ -622,7 +651,9 @@ runs:
         "$RUNNER_TEMP/fresh-cluster.sh"
         status=0
         uvx --from ${{ github.action_path }}/../../python seal ci -- \
-          --k8s_overlay "$K8S_OVERLAY" --build_type "$build_type" "${outcomes[@]}" || status=$?
+          --k8s_overlay "$K8S_OVERLAY" --build_type "$build_type" "${outcomes[@]}" \
+          --record_outcome_video_on_failure "$VIDEO_ON_FAILURE" \
+          --record_outcome_video_on_success "$VIDEO_ON_SUCCESS" || status=$?
         mkdir -p "$RUNNER_TEMP/seal-results"
         if [ -d tests-results ]; then
           mv tests-results "$RUNNER_TEMP/seal-results/$K8S_OVERLAY"
@@ -638,6 +669,8 @@ runs:
       env:
         SEAL_CREDENTIALS_ENV: ${{ inputs.credentials_env }}
         SEAL_BUILDX_CACHE: "1"
+        VIDEO_ON_FAILURE: ${{ inputs.record_outcome_video_on_failure }}
+        VIDEO_ON_SUCCESS: ${{ inputs.record_outcome_video_on_success }}
       shell: bash
       run: |
         # --build_type runtime: the images a real environment runs. They
@@ -655,7 +688,9 @@ runs:
           echo "::group::$overlay"
           "$RUNNER_TEMP/fresh-cluster.sh"
           uvx --from ${{ github.action_path }}/../../python seal ci -- \
-            --k8s_overlay "$overlay" --build_type runtime || status=$?
+            --k8s_overlay "$overlay" --build_type runtime \
+            --record_outcome_video_on_failure "$VIDEO_ON_FAILURE" \
+            --record_outcome_video_on_success "$VIDEO_ON_SUCCESS" || status=$?
           mkdir -p "$RUNNER_TEMP/seal-results"
           if [ -d tests-results ]; then
             mv tests-results "$RUNNER_TEMP/seal-results/$overlay"

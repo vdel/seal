@@ -241,11 +241,15 @@ that release drives, and a generated `playwright.config.js` wiring up:
 - a `junit` reporter writing each outcome's `junit.xml`, which is what puts
   outcome results in the same CI report as each service's own;
 - an `html` reporter and Playwright's own artifacts, beside it;
-- a **video of the browser and a screenshot**, kept only where the test
-  failed -- so a green suite records nothing it keeps, and a red promise
-  leaves behind what a stack trace can't say. An assertion that timed out
-  waiting for a selector reads the same whether the page never loaded,
-  loaded the wrong thing, or loaded the right thing behind a dialog;
+- a **video of the browser and a screenshot** -- which runs keep a video is
+  yours to say, through `--record_outcome_video_on_failure` and
+  `--record_outcome_video_on_success` (see
+  [the flag table](../reference/tilt-extensions.md#tilt-config-flags)).
+  Unset, a broken promise keeps its recording and a kept one does not, which
+  is what a red promise costs somebody: an assertion that timed out waiting
+  for a selector reads the same whether the page never loaded, loaded the
+  wrong thing, or loaded the right thing behind a dialog. The screenshot
+  follows a failure either way;
 - Chromium's sandbox off and `/dev/shm` unused -- properties of running a
   browser in a pod, not of any one project.
 

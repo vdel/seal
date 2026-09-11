@@ -164,6 +164,8 @@ Defined by `ext://seal` and passed after `--`:
 | `--publish_images` | Whether built images are pushed to a real registry. Off unless given. A bare `--publish_images` turns it on, and an explicit `=true` or `=false` sets it either way. |
 | `--build_type` | Which kind of image to build: `development`, `test` or `runtime`. Defaults to `development`. `test` is what turns on each service's own test pipeline. |
 | `--run_outcomes` | Whether the outcome suite runs on its own: `true` or `false`. Left unset it follows the run — `seal ci` is a gate, `seal up` is not. |
+| `--record_outcome_video_on_failure` | Whether a promise the run doesn't see kept keeps a video of its browser: `true` or `false`. Defaults to `true` — a red promise is what somebody has to understand, and only a recording says what the browser actually did. Only the `playwright` runner records anything. |
+| `--record_outcome_video_on_success` | Whether a promise the run *does* see kept keeps one too: `true` or `false`. Defaults to `false`: a video per passing test is footage of things working. Turn it on to check the suite exercises what you think it does. Asking for this without `--record_outcome_video_on_failure` is refused — nothing records a pass and discards a failure. |
 | `--allowed_k8s_contexts` | Kubernetes contexts Tilt is allowed to deploy to, beyond the local ones it permits by default. |
 
 ```sh

@@ -193,6 +193,12 @@ straight from its `.env` files, the same way `seal up` does for local dev,
 so the action never needs to know an app's variable names, or its store's
 name (see `rfcs/0006-credential-resolution.md`).
 
+Which runs keep a video of the browser is the project's to say, through
+`record_outcome_video_on_failure` / `record_outcome_video_on_success` --
+which the extension turns into the one value the `playwright` runner's
+generated config takes, and refuses the pair that would record a pass and
+discard a failure.
+
 A promise that broke also gets its recording published under an address of
 its own -- one unarchived artifact per failure, named after the promise, so
 a report can link the video instead of the archive holding it. A file inside

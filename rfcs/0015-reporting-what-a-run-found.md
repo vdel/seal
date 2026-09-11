@@ -211,6 +211,26 @@ because its detail is already reported as the failed case names beside it --
 listing it again as "something to open" would bury the recording, which is
 the part that is actually new.
 
+Which runs keep a video is the project's, stated as two switches rather than
+one -- `record_outcome_video_on_failure` and
+`record_outcome_video_on_success` -- because they answer different questions.
+The first is what somebody needs to understand a red promise. The second is
+for checking a suite exercises what somebody thinks it does, since a test can
+pass through the wrong page; it costs a video per promise on every green run,
+which is why it is not the unstated answer.
+
+The pair collapses into the one word the runner understands, and one
+combination has no meaning: nothing records a pass and discards a failure. A
+run is recorded or it is not, and what the recording is kept for is decided
+afterwards. Asking for the passes alone is therefore refused at Tiltfile
+parse time rather than quietly rounded up to keeping both -- a project that
+asked for one thing and got a video of every failure as well would never be
+told.
+
+The screenshot follows a failure unconditionally: a single frame rather than
+a stream, so a project recording no footage is not paying for it, and it is
+the one artifact worth having where a video cannot be played.
+
 A `trace` is not recorded by default. It is the better debugging tool and it
 is megabytes per test, viewable only by loading it into Playwright's own
 viewer -- so it is a project's to ask for through `runner_args`, and it is

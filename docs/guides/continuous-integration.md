@@ -127,6 +127,8 @@ repository, so the CLI is already beside it, at the revision `<ref>` names.
 | `provider_setup` | no | Shell run before `seal ci`, putting every CLI your `seal-credentials-config.json` names on `PATH` and authenticating it. `provider_token` reaches it as `$SEAL_PROVIDER_TOKEN`. Empty by default, and correct empty: a project whose `.env` files hold only literals and `k8s://` markers reaches no provider and needs no CLI. |
 | `credentials_env` | no | Which of your credentials environments this run reads -- which store each `.env` reference resolves against, per your own `seal-credentials-config.json`. Reaches `seal ci` as `SEAL_CREDENTIALS_ENV`. Left empty, your `default_env` applies. Deliberately independent of `k8s_overlay`: deriving one from the other would make a production-shaped overlay on a throwaway cluster reach real secrets. |
 | `results_artifact` | no | Name of the artifact the run uploads its results to. Defaults to `tests-results`. An artifact name has to be unique within a workflow run, so give each use its own name if you use this action more than once. |
+| `record_outcome_video_on_failure` | no | Whether a promise the run doesn't see kept keeps a video of its browser -- `true` or `false`, `true` by default. Reaches the runner as `seal ci -- --record_outcome_video_on_failure`. |
+| `record_outcome_video_on_success` | no | Whether a promise the run *does* see kept keeps one too -- `true` or `false`, `true` by default. For checking the suite exercises what you think it does: a test can pass through the wrong page. Costs a video per promise on every green run, so it is worth turning off once a suite is trusted. Without `record_outcome_video_on_failure` the run is refused: nothing records a pass and discards a failure. |
 | `publish_recordings` | no | Whether each broken promise's recording also gets an artifact of its own, so a report can link straight to it -- `true` or `false`, `true` by default. Costs one upload per broken promise and sends the recording's bytes twice, since it stays in the results artifact where the page that plays it lives. |
 | `results_retention_days` | no | How long that artifact is kept. Defaults to 7: it exists for your own reporting job to read in the same run. |
 | `provider_token` | no | One credential for `provider_setup` to authenticate with, reaching it as `$SEAL_PROVIDER_TOKEN`. What it opens, and which store, is your project's business. Passed by value: read it from `secrets` in your own job, which is what binds the Environment it resolves against. |
@@ -254,10 +256,21 @@ every promise the suite read.
 ### Watching a failure
 
 A promise that failed under the `playwright` runner seal supplies leaves a
-video of the browser and a screenshot of the moment it gave way, recorded
-`retain-on-failure` -- so a suite that kept every promise records nothing it
-keeps. They land in that promise's own results directory, which is what puts
-them in the artifact.
+video of the browser and a screenshot of the moment it gave way. They land
+in that promise's own results directory, which is what puts them in the
+artifact.
+
+Which runs keep a video is yours to say, with two inputs:
+
+| `record_outcome_video_on_failure` | `record_outcome_video_on_success` | What happens |
+| --- | --- | --- |
+| `true` | `false` | A broken promise keeps its recording; a kept one records and discards. |
+| `true` | `true` | Every promise keeps one — for checking the suite exercises what you think it does. |
+| `false` | `false` | Nothing is recorded at all, so no run pays the encoding. |
+| `false` | `true` | Refused. Nothing records a pass and discards a failure: keeping the passes means keeping the failures too. |
+
+The screenshot follows a failure either way — a single frame rather than a
+stream, and the one artifact worth having when a video can't be played.
 
 `index.html` is where they are worth opening: download the artifact, extract
 it, open the page, and each failed promise has its recording embedded under

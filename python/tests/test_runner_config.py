@@ -542,25 +542,37 @@ def test_a_file_that_is_not_json_is_complained_about_once(tmp_path):
 
 # --- what the runner seal supplies records --------------------------------
 
-OUTCOMES_TILTFILE = (
-    Path(__file__).resolve().parents[2] / "tilt" / "seal" / "outcomes.Tiltfile"
-)
+_TILT = Path(__file__).resolve().parents[2] / "tilt" / "seal"
+OUTCOMES_TILTFILE = _TILT / "outcomes.Tiltfile"
+CONFIG_TILTFILE = _TILT / "config.Tiltfile"
 
 
-def test_the_playwright_runner_records_a_failure():
+def test_what_the_playwright_runner_records_is_the_projects_to_say():
     """A red browser test costs somebody working out what the browser
     actually did: an assertion that timed out waiting for a selector says the
     same thing whether the page never loaded, loaded the wrong thing, or
     loaded the right thing behind a dialog. A recording answers that, and
-    nothing else the run leaves behind does.
+    nothing else the run leaves behind does -- but a recording per passing
+    test is footage of things working, so which runs keep theirs is a
+    project's decision.
 
-    Read off the Starlark, because the config is generated there and a value
-    restated in this file would agree with itself while disagreeing with
-    what runs.
+    What each pair of switches produces is asserted against a real Tilt
+    evaluation (python/tests/test_seal_tilt_resources.py). This is the
+    narrower claim: the generated config takes the value rather than fixing
+    one.
     """
     starlark = OUTCOMES_TILTFILE.read_text(encoding="utf-8")
 
-    assert "video: 'retain-on-failure'" in starlark
+    assert "video: '{video}'" in starlark
+    assert "video=outcome_video" in starlark
+
+
+def test_a_screenshot_follows_a_failure_whatever_a_project_says_about_video():
+    """A single frame rather than a stream, so a project that wants no
+    footage is not paying for it -- and it is the one artifact worth having
+    when a video cannot be played."""
+    starlark = OUTCOMES_TILTFILE.read_text(encoding="utf-8")
+
     assert "screenshot: 'only-on-failure'" in starlark
 
 
@@ -573,11 +585,13 @@ def test_what_it_records_lands_where_the_results_come_back_from():
     assert "outputDir: results + '/artifacts'" in starlark
 
 
-def test_nothing_is_recorded_on_a_run_that_passed():
-    """`retain-on-failure`, never `on`. A suite that kept every promise would
-    otherwise upload a video per test on every green pull request, and the
-    one run somebody goes looking through is the red one."""
-    starlark = OUTCOMES_TILTFILE.read_text(encoding="utf-8")
+def test_the_two_switches_a_project_sets_are_flags_the_extension_defines():
+    """They reach the runner as `seal ci -- --record_outcome_video_on_...`, and
+    Tilt rejects a config flag it does not define at parse time -- so a rename
+    on one side turns every project's pipeline red at once."""
+    flags = CONFIG_TILTFILE.read_text(encoding="utf-8")
 
-    assert "video: 'on'" not in starlark
-    assert "screenshot: 'on'" not in starlark
+    for switch in ("failure", "success"):
+        assert (
+            "config.define_string('record_outcome_video_on_{}')".format(switch) in flags
+        )
