@@ -33,7 +33,7 @@ SEAL_CI = "seal ci --"
 
 # The step that runs the shape a merge rests on, named so the tests below
 # reach it by something stabler than a prefix of its prose.
-PRIMARY_RUN = "Run the gate on the primary overlay"
+PRIMARY_RUN = "Verify the promises, and each service's own tests"
 
 
 def _caller_with() -> dict:

@@ -294,7 +294,7 @@ runs:
       # internal-seal-tests.yml installs only uv.
       uses: astral-sh/setup-uv@v8.1.0
 
-    - name: Plan what this run verifies
+    - name: Plan the overlays this run verifies
       id: plan
       # Early, and before anything that can fail on a slow network: the
       # `overlays` output is what a caller reports per shape from, and a job
@@ -530,7 +530,7 @@ runs:
     # next run overwrites tests-results/, and does so whether the run passed
     # or failed -- a failed run's report is the one somebody needs to read.
 
-    - name: Run the gate on the primary overlay
+    - name: Verify the promises, and each service's own tests
       working-directory: ${{ inputs.project_dir }}
       env:
         # Which store each `.env` reference resolves against (see
