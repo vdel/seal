@@ -415,6 +415,16 @@ def cmd_tests_results(args: list[str]) -> int:
             "that left no verdict be told from one that was never asked for."
         ),
     )
+    parser.add_argument(
+        "--no-outcomes",
+        action="store_true",
+        help=(
+            "these runs were not asked to read the promises. The tree is "
+            "reported as unread rather than as a suite where every promise "
+            "left no verdict -- which is what it would look like from the "
+            "results alone, and is a failure."
+        ),
+    )
     parsed = parser.parse_args(args)
 
     outcomes_dir = Path(
@@ -423,7 +433,13 @@ def cmd_tests_results(args: list[str]) -> int:
     # Read once, not per run: the tree is the same for every shape a
     # pipeline verified -- what differs between them is the verdicts, which
     # each run's own results directory holds.
-    declared = discover_outcomes(outcomes_dir)
+    #
+    # Nothing is discovered for a run that never read the suite. A promise
+    # whose verdict nobody went looking for and one whose test did not write
+    # a verdict are indistinguishable here, and only the caller knows which
+    # it is -- so it says, rather than being guessed at from an empty
+    # directory.
+    declared = [] if parsed.no_outcomes else discover_outcomes(outcomes_dir)
 
     runs = {}
     for entry in parsed.run:
@@ -435,13 +451,15 @@ def cmd_tests_results(args: list[str]) -> int:
                 f"Error: --run names '{name}' twice, so one run's results would "
                 "silently replace the other's."
             )
-        runs[name] = _rendered_run(Path(directory), declared)
+        runs[name] = _rendered_run(Path(directory), declared, not parsed.no_outcomes)
 
     print(json.dumps(runs, separators=(",", ":")))
     return 0
 
 
-def _rendered_run(results_root: Path, declared: list[Outcome]) -> dict:
+def _rendered_run(
+    results_root: Path, declared: list[Outcome], read_outcomes: bool = True
+) -> dict:
     """One run as the plain data a consumer reads: the verdict, the counts, a
     line per source of reports, and a line per promise.
 
@@ -459,7 +477,7 @@ def _rendered_run(results_root: Path, declared: list[Outcome]) -> dict:
     to refuse.
     """
     run = read_run_tests(results_root, exclude=(OUTCOMES_RESULTS_SUBDIR,))
-    outcomes = _rendered_outcomes(results_root, declared)
+    outcomes = _rendered_outcomes(results_root, declared, read_outcomes)
     return {
         # Both halves, because a run is green only if both were: the
         # services' own tests and every promise the suite read.
@@ -487,7 +505,9 @@ def _rendered_run(results_root: Path, declared: list[Outcome]) -> dict:
     }
 
 
-def _rendered_outcomes(results_root: Path, declared: list[Outcome]) -> dict:
+def _rendered_outcomes(
+    results_root: Path, declared: list[Outcome], read_outcomes: bool = True
+) -> dict:
     """Every promise, and what this run found out about it.
 
     Named by headline as well as by slug: the headline is what the project
@@ -506,8 +526,13 @@ def _rendered_outcomes(results_root: Path, declared: list[Outcome]) -> dict:
         state: sum(1 for result in results if result.state == state)
         for state in (PASSED, FAILED, NO_VERDICT, UNTRANSLATED)
     }
-    problems = _outcome_result_problems(results_root, results)
+    problems = _outcome_result_problems(results_root, results) if read_outcomes else []
     return {
+        # Whether this run went looking at all. A run that was not asked to
+        # read the promises says so, rather than reporting a tree of promises
+        # that left no verdict -- which is what the same absence means when a
+        # run *was* asked, and is a failure.
+        "read": read_outcomes,
         # A problem is as much a reason this is not green as a failure is:
         # it says the verdicts cannot be believed, and "cannot be believed"
         # must never render as "held".

@@ -161,6 +161,7 @@ why.
        "failed": [], "failed_omitted": 0, "problems": []}
     ],
     "outcomes": {
+      "read": true,
       "passed": false,
       "counts": {"PASS": 11, "FAIL": 1},
       "quarantined": 0,
@@ -206,6 +207,13 @@ the suite has been told not to gate on: it is still reported, and still not
 reported as passed. `failed` carries which case gave way, where that
 promise's runner also wrote a JUnit report -- detail beside the verdict, not
 the verdict itself, which is the file the runner wrote.
+
+`read` is `false` when the run was not asked to read the promises at all
+(`run_outcomes: false`). `promises` is then empty and `passed` is `true` --
+because nothing here is a claim about them. That distinction matters: a run
+that never looked and a run whose every test failed to write a verdict leave
+exactly the same absence behind, and only the workflow knows which it was, so
+it says rather than letting the second one read as the first.
 
 `passed` at the top is both halves together: every service's own tests, and
 every promise the suite read.
@@ -421,12 +429,18 @@ same revision.
    runtime --publish_images --run_outcomes false` and lets Tilt push what it
    built. Not a gate: the promises were read by the runs above, and reading
    them again would say the same thing more slowly.
-9. Reads every JUnit report the runs left behind (`seal _tests-results`,
-   the same `junit.py` that decided each service's verdict during the run)
-   into the `results` output, and uploads `tests-results/` as an artifact --
-   filed under the overlay that produced it, so one run's results never
-   overwrite another's. Both happen whatever the gates said: a failed run's
-   results are the ones somebody needs.
+9. Reads what the runs left behind into the `results` output -- each
+   service's own reports through `seal _tests-results`' `junit.py`, the same
+   module that decided that service's verdict during the run, and the
+   promises through the `outcome_suite.py` their verdicts came from. A run
+   asked not to read the promises says so here, rather than reporting a tree
+   that left no verdict.
+10. Renders that reading into `index.html` and `report.md` (`seal _report`),
+   and uploads `tests-results/` as an artifact -- filed under the overlay
+   that produced it, so one run's results never overwrite another's, with
+   the reading and the page beside them at the root. All of it happens
+   whatever the gates said: a failed run's results are the ones somebody
+   needs.
 
 Steps 6 to 8 are steps of one job rather than jobs of their own: each needs
 the cluster, the images and the tooling the ones before it set up, and a

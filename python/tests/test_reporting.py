@@ -235,6 +235,57 @@ def test_results_from_a_suite_no_tree_declares_are_a_problem(tmp_path, capsys):
     assert not run["passed"]
 
 
+def test_a_run_that_never_read_the_promises_says_so_rather_than_failing(tmp_path, capsys):
+    """A run can be asked for the faster half of the gate: each service's own
+    tests, and the readiness every run gates on. Every promise then has no
+    verdict -- which from the results alone is exactly what a suite whose
+    tests all failed to write one looks like, and that is a failure. Only the
+    caller knows which of the two it is, so it says rather than being guessed
+    at from an empty directory."""
+    tree(tmp_path)
+    promise(tmp_path, "one", verdict=None)
+    write(tmp_path / DEFAULT_RESULTS_DIR_NAME / "api" / "junit.xml", service_report(PASSING))
+
+    run = read(tmp_path, capsys, "--no-outcomes")
+
+    assert run["passed"]
+    assert run["outcomes"]["read"] is False
+    assert run["outcomes"]["promises"] == []
+
+
+def test_a_run_that_was_asked_and_got_nothing_back_is_still_a_failure(tmp_path, capsys):
+    """The other side of the same switch, and the reason it has to be a
+    switch: with the promises read, a translated promise that left no verdict
+    is a test nothing knows ran."""
+    tree(tmp_path)
+    promise(tmp_path, "one", verdict=None)
+    write(tmp_path / DEFAULT_RESULTS_DIR_NAME / "api" / "junit.xml", service_report(PASSING))
+
+    run = read(tmp_path, capsys)
+
+    assert not run["passed"]
+    assert run["outcomes"]["read"] is True
+    assert [p["state"] for p in run["outcomes"]["promises"]] == [NO_VERDICT]
+
+
+def test_a_rendering_of_an_unread_suite_claims_nothing_about_it(tmp_path, capsys):
+    """The page and the comment have to be readable as "this says nothing
+    about the promises" rather than as "the promises held" -- a green run
+    that quietly stopped covering them is the one thing the gate exists to
+    refuse."""
+    tree(tmp_path)
+    promise(tmp_path, "one", headline="a deleted item stays deleted", verdict=None)
+    write(tmp_path / DEFAULT_RESULTS_DIR_NAME / "api" / "junit.xml", service_report(PASSING))
+    runs = {"dev": read(tmp_path, capsys, "--no-outcomes")}
+
+    page = reporting.render_html(runs)
+    comment = reporting.render_markdown(runs)
+
+    for text in (page, comment):
+        assert "not asked to read them" in text or "not read by this run" in text
+        assert "a deleted item stays deleted" not in text
+
+
 def test_a_project_with_no_outcome_tree_is_not_a_project_with_a_broken_one(tmp_path, capsys):
     """Outcome tests are something a project adopts, not something it has to
     have before `seal` will report on it."""

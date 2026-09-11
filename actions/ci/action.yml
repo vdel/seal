@@ -712,7 +712,19 @@ runs:
         # Assigned before it is written, so a command that failed fails the
         # step: `echo "results=$(...)"` would report the echo's own success
         # and hand the caller an empty output to guess at.
-        results="$(uvx --from ${{ github.action_path }}/../../python seal _tests-results "${runs[@]}")"
+        # Kept out of `runs` above, which is what the emptiness check counts:
+        # a switch is not a run, and one counted as such would send a command
+        # naming no results directory at all.
+        #
+        # A run that was not asked to read the promises has no verdict for any
+        # of them, which from the results alone is indistinguishable from a
+        # suite where every test failed to write one -- and that is a failure.
+        # Only this file knows which of the two it is, so it says.
+        promises=()
+        if [ "$RUN_OUTCOMES" != "true" ]; then
+          promises+=(--no-outcomes)
+        fi
+        results="$(uvx --from ${{ github.action_path }}/../../python seal _tests-results "${runs[@]}" "${promises[@]}")"
         # One line of JSON, so it needs none of $GITHUB_OUTPUT's delimiter
         # syntax: a newline inside a rendered value is escaped by the JSON
         # itself.
@@ -743,7 +755,10 @@ runs:
       shell: bash
       run: |
         if [ ! -f "$RUNNER_TEMP/seal-results/results.json" ]; then
-          echo "The run failed before it could read what it found, so there is nothing to render."
+          # Either no run was asked to report anything, or one died before it
+          # could read what it found. Both leave nothing to render, and the
+          # step above has already said which it was.
+          echo "Nothing was read, so there is nothing to render."
           exit 0
         fi
         uvx --from ${{ github.action_path }}/../../python seal _report \

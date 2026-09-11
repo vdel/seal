@@ -473,6 +473,22 @@ def test_the_artifact_carries_a_report_a_person_can_read():
     )
 
 
+def test_a_run_that_did_not_read_the_promises_says_so_rather_than_reporting_none_kept():
+    """With `run_outcomes` off, every promise has no verdict -- which from the
+    results alone is exactly what a suite whose tests all failed to write one
+    looks like, and that is a failure. Only this file knows which of the two
+    it is, so it tells the reading."""
+    collect = next(step for step in _steps() if step.get("id") == "collect")
+
+    assert "--no-outcomes" in collect["run"]
+    assert 'if [ "$RUN_OUTCOMES" != "true" ]; then' in collect["run"]
+    # And not into the array the emptiness check counts: a switch is not a
+    # run, and one counted as such sends a command naming no results
+    # directory at all.
+    switch = collect["run"].index("--no-outcomes")
+    assert collect["run"].index("${#runs[@]} -eq 0") < switch
+
+
 def test_the_reading_travels_with_the_reports_as_well_as_out_as_an_output():
     """An output is readable by this workflow run alone. Somebody opening a
     failed run's artifact weeks later gets the reports; without the reading

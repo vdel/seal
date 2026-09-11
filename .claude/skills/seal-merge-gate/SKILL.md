@@ -180,6 +180,12 @@ Each promise in `outcomes.promises` carries its `slug`, its prompt's
 failure), or `no test yet` (nothing translated from it -- not a failure).
 `outcomes.counts` counts them by state.
 
+`outcomes.read` is `false` where the run was asked not to read them
+(`run_outcomes: false`): `promises` is empty and nothing in the results is a
+claim about them. A run that never looked and a run whose every test failed
+to write a verdict leave the same absence behind, so which it was is stated
+rather than inferred.
+
 A summary job reading `results` needs no permissions at all. For a comment
 on the pull request, use Seal's own `report` action from a job of its own:
 

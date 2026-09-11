@@ -112,6 +112,18 @@ def run_passed(run: dict) -> bool:
     return bool(run.get("passed"))
 
 
+def outcomes_read(run: dict) -> bool:
+    """Whether this run went looking at the promises at all.
+
+    A run can be asked for the faster half of the gate -- each service's own
+    tests and readiness, and nothing about what the application promises.
+    From the results alone that is indistinguishable from a suite where
+    every promise left no verdict, which is a failure; the reading says
+    which it was, and this is where that reaches a reader.
+    """
+    return bool(run.get("outcomes", {}).get("read", True))
+
+
 def outcome_counts(run: dict) -> dict[str, int]:
     """How many promises this run found in each state, whatever the listing
     had room for."""
@@ -328,10 +340,16 @@ def _html_outcomes(run: dict) -> str:
     """
     listed = promises(run)
     counts = outcome_counts(run)
+    if not outcomes_read(run):
+        return (
+            "<h3>Promises</h3>"
+            '<p class="empty">This run was not asked to read them, so nothing '
+            "here says whether they still hold.</p>"
+        )
     if not listed and not counts:
         return (
             "<h3>Promises</h3>"
-            '<p class="empty">This run read no outcome suite.</p>'
+            '<p class="empty">This project declares no promises.</p>'
         )
 
     summary = ", ".join(
@@ -450,7 +468,13 @@ def _markdown_run(name: str, run: dict) -> list[str]:
     ]
 
     counts = outcome_counts(run)
-    if counts:
+    headline_lines = len(lines)
+    if not outcomes_read(run):
+        lines.append(
+            "Promises: not read by this run, so nothing here says whether they "
+            "still hold."
+        )
+    elif counts:
         lines.append(
             "Promises: {}.".format(
                 ", ".join(
@@ -469,7 +493,7 @@ def _markdown_run(name: str, run: dict) -> list[str]:
                 run.get("skipped", 0),
             )
         )
-    if counts or services:
+    if len(lines) > headline_lines:
         lines.append("")
 
     listed_problems = problems(run)
