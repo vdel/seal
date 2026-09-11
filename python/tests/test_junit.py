@@ -224,8 +224,8 @@ def test_the_cli_exits_on_what_the_report_says(tmp_path, capsys, body, exit_code
 
 def test_a_run_is_read_as_the_directories_its_results_came_back_in(tmp_path):
     """Each service under its own name and the outcome suite under
-    `outcomes`, because that is how they reach a project -- and nothing here
-    has to tell them apart."""
+    `outcomes`, because that is how they reach a project. What a directory
+    holds is read the same way whatever it is called."""
     write(tmp_path / "api" / "junit.xml", report(PASSING, PASSING))
     write(tmp_path / "outcomes" / "ui" / "todo-list" / "one" / "junit.xml", report(PASSING))
 
@@ -234,6 +234,34 @@ def test_a_run_is_read_as_the_directories_its_results_came_back_in(tmp_path):
     assert [source.service for source in run.sources] == ["api", "outcomes"]
     assert run.passed
     assert run.cases == 3
+
+
+def test_a_source_somebody_else_reads_is_left_to_them(tmp_path):
+    """The outcome suite's verdict is a file per promise rather than a JUnit
+    report, and outcome_suite.py is what reads it -- so a caller reading it
+    there excludes it here. Two modules reading the same results are two
+    answers to one question, free to disagree."""
+    write(tmp_path / "api" / "junit.xml", report(PASSING))
+    write(tmp_path / "outcomes" / "ui" / "todo-list" / "one" / "junit.xml", report(FAILING))
+
+    run = read_run_tests(tmp_path, exclude=("outcomes",))
+
+    assert [source.service for source in run.sources] == ["api"]
+    assert run.passed
+
+
+def test_a_run_whose_only_results_are_its_promises_still_ran(tmp_path):
+    """A project with no service tests at all -- every promise translated,
+    nothing else -- produced results. Deciding that before the exclusion is
+    what stops "somebody else reads this one" from reading as "this run
+    produced nothing", which is a failure."""
+    write(tmp_path / "outcomes" / "ui" / "todo-list" / "one" / "passed", "1\n")
+
+    run = read_run_tests(tmp_path, exclude=("outcomes",))
+
+    assert run.sources == ()
+    assert run.problems == ()
+    assert run.passed
 
 
 def test_one_failed_source_fails_the_whole_run(tmp_path):

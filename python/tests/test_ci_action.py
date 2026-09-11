@@ -441,6 +441,65 @@ def test_the_results_are_read_by_the_cli_that_decided_the_run_s_own_verdict():
     assert "seal _tests-results" in collect["run"]
 
 
+def test_the_artifact_carries_a_report_a_person_can_read():
+    """A download of raw XML answers "did it pass?" only to whoever will
+    parse it. The page renders what the reading already says, so the results
+    a project is handed are readable as well as parseable -- and it publishes
+    nothing and needs no scope, which is what keeps it on this side of the
+    boundary while a check or a comment stays the project's decision.
+
+    Rendered by the CLI, for the same reason the reading is: a page that
+    parsed the reports itself could say a promise held where the gate said it
+    broke.
+    """
+    render = next(
+        step for step in _steps() if step["name"] == "Render what each run found"
+    )
+
+    assert "seal _report" in render["run"]
+    assert "uvx --from" in render["run"]
+    # Into the directory the artifact is uploaded from, so it travels with
+    # the reports it describes rather than as a second thing to find.
+    assert "$RUNNER_TEMP/seal-results/index.html" in render["run"]
+    # And whatever the gates said: a failed run's report is the one somebody
+    # needs to read.
+    assert "!cancelled()" in render["if"]
+
+    upload = next(
+        step for step in _steps() if step.get("uses", "").startswith("actions/upload-artifact")
+    )
+    assert _steps().index(render) < _steps().index(upload), (
+        "a page rendered after the upload is a page nobody receives"
+    )
+
+
+def test_a_run_that_did_not_read_the_promises_says_so_rather_than_reporting_none_kept():
+    """With `run_outcomes` off, every promise has no verdict -- which from the
+    results alone is exactly what a suite whose tests all failed to write one
+    looks like, and that is a failure. Only this file knows which of the two
+    it is, so it tells the reading."""
+    collect = next(step for step in _steps() if step.get("id") == "collect")
+
+    assert "--no-outcomes" in collect["run"]
+    assert 'if [ "$RUN_OUTCOMES" != "true" ]; then' in collect["run"]
+    # And not into the array the emptiness check counts: a switch is not a
+    # run, and one counted as such sends a command naming no results
+    # directory at all.
+    switch = collect["run"].index("--no-outcomes")
+    assert collect["run"].index("${#runs[@]} -eq 0") < switch
+
+
+def test_the_reading_travels_with_the_reports_as_well_as_out_as_an_output():
+    """An output is readable by this workflow run alone. Somebody opening a
+    failed run's artifact weeks later gets the reports; without the reading
+    beside them, the one thing it says that no report can -- that a shape's
+    run produced nothing at all -- is the thing they cannot get."""
+    collect = next(step for step in _steps() if step.get("id") == "collect")
+
+    assert "$GITHUB_OUTPUT" in collect["run"]
+    assert "$RUNNER_TEMP/seal-results/results.json" in collect["run"]
+
+
 def test_the_reports_themselves_survive_the_run_that_produced_them():
     """The `results` output carries what the reports say, not the reports:
     it is a string with a size limit, and the coverage sitting beside them

@@ -64,9 +64,10 @@ The repo has four parts:
   other app.
 - **`python/`** — a small Python CLI package (`seal`; see `python/README.md`).
 - **`actions/`** — the composite GitHub Actions this repo publishes: `ci`,
-  the generic build → test pipeline. An action rather than a reusable
-  workflow so the CLI above travels with it, at the same revision, needing
-  no credential to fetch.
+  the generic build → test pipeline, and `report`, the opt-in presentation
+  of what one found (a job summary, and one pull-request comment updated in
+  place). Actions rather than reusable workflows so the CLI above travels
+  with them, at the same revision, needing no credential to fetch.
 - **`.claude/`** — the agent-facing half (see `.claude/README.md`): skills
   and subagents that let a coding agent discover Seal in a repository and use
   it -- which `seal` command replaces which `tilt` one, what an outcome test
@@ -174,7 +175,8 @@ throwaway Kind cluster, run `seal ci` -- which runs each service's own
 tests inside its running container -- run the project's outcome suite
 against the environment that just came up, and hand back what every run
 found -- as outputs a caller reports from, so how a project presents its
-results, and whichever action it uses to do so, stays that project's own. So
+results, and whichever action it uses to do so, stays that project's own
+(see `rfcs/0015-reporting-what-a-run-found.md`). So
 a green run means two things: the environment came up, and every promise the
 project has translated still holds (see `rfcs/0010-outcome-tree.md`). What
 makes that a usable merge gate is `seal ci` exiting successfully only
@@ -190,6 +192,25 @@ resolves against. Which CLI opens that store is the project's
 straight from its `.env` files, the same way `seal up` does for local dev,
 so the action never needs to know an app's variable names, or its store's
 name (see `rfcs/0006-credential-resolution.md`).
+
+What it renders rather than publishes is the results artifact's own page:
+`seal _report` writes a self-contained `index.html` and a `report.md` beside
+the reports, from what `seal _tests-results` already read. That needs no
+scope and tells nobody anything -- it only means the results a project is
+handed are readable as well as parseable. The action posts no check, no
+comment, no status and no job summary.
+
+### `actions/report` — the presentation
+
+The other side of that line, and opt-in: a composite action that takes the
+`results` output of `ci` and writes the same rendering to the calling job's
+summary and to one pull-request comment, replaced on every run rather than
+added to. A caller puts it in a job of its own, and that job declares the
+`pull-requests: write` the comment needs -- so a project that wants no
+comment simply doesn't use it, and inherits neither the scope nor the
+behaviour. It reads nothing: rendering what the gate already concluded is
+what keeps a report from being a second opinion about it (see
+`rfcs/0015-reporting-what-a-run-found.md`).
 
 Publishing an image to a real registry, deploying an overlay that names a
 real environment, and sealing credentials for one are all part of the

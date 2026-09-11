@@ -162,21 +162,62 @@ enumerates them and never goes stale against them.
 
 ### What comes back
 
-The action does not publish a report. How a project's results are presented
-is that project's own policy -- along with whichever action implements it and
-the write scopes that action needs on their pull requests -- so it hands back
-three outputs and stops:
+The action publishes nothing -- no check, no comment, no status, not even a
+job summary. Which of those a project's results become is that project's own
+policy, along with whichever action implements it and the write scopes that
+action needs on their pull requests. So it hands back three outputs and
+stops:
 
 | Output | What it carries |
 | --- | --- |
 | `overlays` | The overlays this run verified, as a JSON list. Empty when the run died before it could say which shapes it was going to run, and `fromJSON('')` fails the job reading it -- so a caller guards on that. |
-| `results` | What every run found, as one line of JSON keyed by overlay: `passed`, `cases`, `skipped`, `failed`, `problems`, and one `sources` entry per directory the results came back in (each service under its own name, the outcome suite under `outcomes`). Read by the same `junit.py` the gate's own verdict comes from, so it cannot disagree with the run. Failed test names are capped per source, with `failed_omitted` saying how many were left out; the failed count never is. |
-| `results_artifact` | Name of the artifact holding the reports themselves, as `<overlay>/<service>/junit.xml` -- what to download to feed an action that wants XML, or the coverage `results` does not carry. Nothing is uploaded when a run produced no results, so a download step guards against a missing artifact. |
+| `results` | What every run found, as one line of JSON keyed by overlay: `passed`, `cases`, `skipped`, `failed`, `problems`, one `sources` entry per service whose own tests came back, and an `outcomes` block holding every promise the tree declares. Read by the same two modules the gate's own verdicts came from, so it cannot disagree with the run. Failed test names are capped per source, with `failed_omitted` saying how many were left out; the failed count never is, and no promise is ever left out. |
+| `results_artifact` | Name of the artifact holding the reports themselves, the reading as `results.json`, and a self-contained `index.html` page of both. Each service's own report is at `<overlay>/<service>/junit.xml` and each promise's directory at `<overlay>/outcomes/<group>/<epic>/<outcome>/`. Nothing is uploaded when a run produced no results, so a download step guards against a missing artifact. |
 
-A summary job reading `results` needs no permissions at all. A job publishing
-a check or a pull-request comment downloads the artifact and gets
-`checks: write` / `pull-requests: write` of its own -- never by widening what
-the job running the action grants.
+Each promise in `outcomes.promises` carries its `slug`, its prompt's
+`headline`, whether it is `quarantined`, and one of four states: `PASS`,
+`FAIL`, `no verdict` (it has a test and nothing knows whether it ran -- a
+failure), or `no test yet` (nothing translated from it -- not a failure).
+`outcomes.counts` counts them by state.
+
+`outcomes.read` is `false` where the run was asked not to read them
+(`run_outcomes: false`): `promises` is empty and nothing in the results is a
+claim about them. A run that never looked and a run whose every test failed
+to write a verdict leave the same absence behind, so which it was is stated
+rather than inferred.
+
+A summary job reading `results` needs no permissions at all. For a comment
+on the pull request, use Seal's own `report` action from a job of its own:
+
+```yaml
+  report:
+    needs: tests
+    if: (!cancelled()) && needs.tests.outputs.results != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: vdel/seal/actions/report@v0.3
+        with:
+          results: ${{ needs.tests.outputs.results }}
+          # Which comment a run replaces, so two projects gated in one
+          # workflow keep a report each. Defaults to `default`.
+          comment_key: my-project
+```
+
+It writes the rendering to that job's summary and keeps one comment on the
+pull request current, replaced on every run -- ending with the head commit
+it is about, since replacing it in place leaves nothing else to date it by.
+Both can be turned off
+(`comment`, `job_summary` -- compared as the strings `'true'`/anything
+else). A pull request from a fork gets a read-only token whatever the job
+declares, so there the action warns instead of failing.
+
+A job publishing a check run instead downloads the artifact and gets
+`checks: write` of its own -- never by widening what the job running the
+gate grants.
 
 ### What an action changes about the caller
 
@@ -188,8 +229,9 @@ the job running the action grants.
   `overlays` or reporting from `results` needs the running job to declare
   them as its own.
 - **`permissions:` is the calling job's.** An action runs under whatever
-  that job has. This one reads the repository and reports nothing back, so
-  `contents: read` is enough.
+  that job has. The gate reads the repository and publishes nothing, so
+  `contents: read` is enough for it; the reporting job above declares the
+  `pull-requests: write` its comment needs, and nothing else does.
 - **The CLI travels with the action**, at the revision it was used at. The
   one pin left is the project's root Tiltfile registering the Starlark half
   with `v1alpha1.extension_repo(ref=...)` -- the two halves are one library,

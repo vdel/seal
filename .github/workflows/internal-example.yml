@@ -164,47 +164,32 @@ jobs:
     # it hands back a reading as well as the reports: a shape whose run died
     # before writing a single report has nothing for the checks above to
     # publish, and looks from them exactly like a shape that was never asked
-    # for. `results` says which it was, without an artifact to download and
-    # needing no permissions at all.
+    # for. `results` says which it was, without an artifact to download.
+    #
+    # Through seal's own `report` action, which renders that reading into
+    # this job's summary and into one comment on the pull request -- updated
+    # in place, so twenty pushes leave one current report rather than twenty
+    # stale ones. A separate job because the comment needs
+    # `pull-requests: write`, and the gate has no business holding that (see
+    # /rfcs/0015-reporting-what-a-run-found.md at the repo root).
     needs: tests
     if: (!cancelled()) && needs.tests.outputs.results != ''
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
-    - name: Say what each shape's run found
-      env:
-        # Through the environment rather than interpolated into the script:
-        # the results carry test names, which are whatever somebody called a
-        # test.
-        SEAL_RESULTS: ${{ needs.tests.outputs.results }}
-      run: |
-        python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
-        import json, os
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ inputs.ref }}
 
-        def tests(count):
-            return "{} test{}".format(count, "" if count == 1 else "s")
-
-        for overlay, run in json.loads(os.environ["SEAL_RESULTS"]).items():
-            print("## {} -- {}".format(overlay, "passed" if run["passed"] else "FAILED"))
-            print()
-            print("{}, {} failed, {} skipped".format(
-                tests(run["cases"]), run["failed"], run["skipped"],
-            ))
-            print()
-            # A problem is a reason the results cannot be believed rather
-            # than a test that failed -- a run that produced nothing, a
-            # report that did not parse -- so it is the line the checks
-            # cannot carry.
-            for problem in run["problems"]:
-                print("- {}".format(problem))
-            for source in run["sources"]:
-                print("- **{}** ({}): {}, {} failed, {} skipped".format(
-                    source["name"], "ok" if source["passed"] else "FAILED",
-                    tests(source["cases"]),
-                    len(source["failed"]) + source["failed_omitted"],
-                    source["skipped"],
-                ))
-                for problem in source["problems"]:
-                    print("  - {}".format(problem))
-            print()
-        PY
+    - uses: ./actions/report
+      with:
+        results: ${{ needs.tests.outputs.results }}
+        title: "Seal results (angular-django)"
+        # Names which comment this run replaces. One use of the action here,
+        # so one key -- a repository gating two projects in one workflow
+        # gives each its own, or each keeps overwriting the other's report.
+        comment_key: angular-django
+        source: "${{ github.repository }}@${{ github.sha }}"

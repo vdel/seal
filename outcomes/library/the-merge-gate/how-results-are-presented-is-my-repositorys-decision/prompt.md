@@ -16,12 +16,16 @@ how.
 
 - A run's findings are available to the caller in a form it can act on.
 - Nothing is published on the project's behalf that it did not ask for.
+- The findings can be read by a person as well as parsed by a pipeline,
+  without anything being published to read them.
 - A project that wants a particular presentation can build it from what it
   was handed.
 
 ## What this does not claim
 
-That a project gets a presentation for free. It gets the findings; making
-them into a report is the project's, and that is the trade.
+That a presentation appears anywhere on its own. A rendering is something
+the library will write down for whoever asks; putting it where people see it
+-- a check, a comment, a dashboard -- is the project's, and that is the
+trade.
 
 Anything about which reporting tools exist or are any good.
