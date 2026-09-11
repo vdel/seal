@@ -38,7 +38,19 @@ comment as an injected directive.
 import html
 from datetime import datetime, timezone
 
-from seal.outcome_suite import FAILED, NO_VERDICT, PASSED, UNTRANSLATED
+from seal.outcome_suite import (
+    FAILED,
+    NO_VERDICT,
+    PASSED,
+    RECORDING_KINDS,
+    UNTRANSLATED,
+)
+
+# Which kinds a pipeline can have published under an address of their own,
+# and so which ones a per-failure link makes redundant in the listing under
+# it. The same set the CLI selects for publishing (see
+# outcome_suite.RECORDING_KINDS), read from there rather than restated.
+PUBLISHED_KINDS = RECORDING_KINDS
 
 # The states a promise can be reported in, in the order a reader wants them:
 # what broke first, what nobody can vouch for next, then what held and what
@@ -87,7 +99,10 @@ def render_html(runs: dict, title: str = DEFAULT_TITLE, source: str = "") -> str
 
 
 def render_markdown(
-    runs: dict, title: str = DEFAULT_TITLE, artifact_url: str = ""
+    runs: dict,
+    title: str = DEFAULT_TITLE,
+    recordings: dict | None = None,
+    artifact_url: str = "",
 ) -> str:
     """The same runs, short enough to be a comment.
 
@@ -95,25 +110,30 @@ def render_markdown(
     it: a reviewer scrolling a pull request has to be able to tell a green
     gate from a red one without expanding anything.
 
-    `artifact_url` is where the recordings named below can actually be
-    fetched. A file inside a CI artifact has no address of its own -- the
-    artifact is one archive, downloaded whole -- so a comment can name the
-    path and point at the archive, and that is the whole of what a comment
-    can do. The page inside that archive is what opens them.
+    `recordings` maps what a pipeline published to where it published it
+    (see recording_key()). Where a failure's own recording is in there, the
+    comment links it directly -- which is the whole point of publishing one
+    on its own, since a file inside an archive has no address and a reader
+    would otherwise be downloading one to go looking.
+
+    `artifact_url` is the archive itself, for everything that was not
+    published on its own: the screenshots, the logs, and the page that plays
+    the recordings where they sit.
     """
+    recordings = recordings or {}
     lines = ["## {}".format(title), ""]
     lines.append(_markdown_overview(runs))
     lines.append("")
     for name, run in runs.items():
-        lines.extend(_markdown_run(name, run))
+        lines.extend(_markdown_run(name, run, recordings))
     if artifact_url and any(
         evidence(name, promise)
         for name, run in runs.items()
         for promise in failed_promises(run)
     ):
         lines.append(
-            "The recordings above are in the [results artifact]({}) -- download it "
-            "and open `index.html`, which plays them where they sit.".format(artifact_url)
+            "Everything a failure left behind is in the [results artifact]({}), and "
+            "its `index.html` plays the recordings where they sit.".format(artifact_url)
         )
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
@@ -175,6 +195,17 @@ def failed_promises(run: dict) -> list[dict]:
         for promise in promises(run)
         if promise.get("state") in (FAILED, NO_VERDICT)
     ]
+
+
+def recording_key(run_name: str, slug: str) -> str:
+    """How a published recording is looked up: by the run it came from and
+    the promise it is about.
+
+    Both halves, because two shapes verified in one pipeline can break the
+    same promise, and a report that showed one shape's recording under the
+    other's failure would be worse than showing none.
+    """
+    return "{}/{}".format(run_name, slug)
 
 
 def evidence(run_name: str, promise: dict) -> list[dict]:
@@ -542,7 +573,7 @@ def _markdown_overview(runs: dict) -> str:
     return "**{} of {} failed.**".format(total - passed, _shapes(total))
 
 
-def _markdown_run(name: str, run: dict) -> list[str]:
+def _markdown_run(name: str, run: dict, recordings: dict | None = None) -> list[str]:
     """One run, worst news first.
 
     Everything here is capped, and every cap is stated: a comment is the one
@@ -607,10 +638,26 @@ def _markdown_run(name: str, run: dict) -> list[str]:
                     ": {}".format(promise["headline"]) if promise.get("headline") else "",
                 )
             )
-            # What it recorded, named rather than linked: a file inside a CI
-            # artifact has no address of its own, so the path is what lets
-            # somebody find it once the archive is open.
-            recorded = evidence(name, promise)
+            # Where the recording of this failure was published, when it
+            # was: one click, no archive to open. This is the line the whole
+            # arrangement exists for.
+            published = (recordings or {}).get(
+                recording_key(name, promise.get("slug", ""))
+            )
+            if published:
+                lines.append("  - ▶ [watch this failure]({})".format(published))
+            # And what else it left, named rather than linked: a file inside
+            # a CI artifact has no address of its own, so the path is what
+            # lets somebody find it once the archive is open.
+            #
+            # The recording itself drops out of that listing once it has a
+            # link of its own -- naming a path to the file somebody was just
+            # offered in one click is noise.
+            recorded = [
+                item
+                for item in evidence(name, promise)
+                if not (published and item.get("kind") in PUBLISHED_KINDS)
+            ]
             for item in recorded[:MAX_LISTED_EVIDENCE]:
                 lines.append(
                     "  - {}: `{}`".format(item.get("kind", "file"), item["href"])

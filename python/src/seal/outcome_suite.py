@@ -199,6 +199,13 @@ EVIDENCE_KINDS = (
     ("log", (".txt", ".log")),
 )
 
+# Of those kinds, the ones worth publishing on their own: a file somebody
+# watches, rather than one they read beside a report. A pipeline can give
+# each of these an address of its own (see `seal _report --recordings-list`),
+# which is the difference between watching a failure and downloading an
+# archive to go looking for it.
+RECORDING_KINDS = ("video",)
+
 # The verdict and the JUnit report are not evidence: one is the answer the
 # suite already read and the other is where the answer's detail already came
 # from, both reported in their own right. Listing them again as "something to

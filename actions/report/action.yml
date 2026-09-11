@@ -68,6 +68,17 @@ inputs:
       permissions at all.
     required: false
     default: 'true'
+  recordings:
+    description: >
+      Where each broken promise's recording was published, as the JSON
+      `actions/ci` hands back in its `recordings` output.
+
+      This is what lets the comment say "watch this failure" with a link
+      that reaches the recording itself. Empty -- a green run, or a project
+      that turned publishing them off -- leaves the paths named and the
+      archive linked, which still gets somebody there.
+    required: false
+    default: '{}'
   artifact_url:
     description: >
       Where the files this rendering names can be downloaded -- the
@@ -119,14 +130,17 @@ runs:
         SEAL_REPORT_TITLE: ${{ inputs.title }}
         SEAL_REPORT_SOURCE: ${{ inputs.source }}
         SEAL_ARTIFACT_URL: ${{ inputs.artifact_url }}
+        SEAL_RECORDINGS: ${{ inputs.recordings }}
       shell: bash
       run: |
         printf '%s' "$SEAL_RESULTS" > "$RUNNER_TEMP/seal-results.json"
+        printf '%s' "${SEAL_RECORDINGS:-{\}}" > "$RUNNER_TEMP/seal-recordings.json"
         uvx --from ${{ github.action_path }}/../../python seal _report \
           --results "$RUNNER_TEMP/seal-results.json" \
           --markdown "$RUNNER_TEMP/seal-report.md" \
           --title "$SEAL_REPORT_TITLE" \
           --source "$SEAL_REPORT_SOURCE" \
+          --recordings "$RUNNER_TEMP/seal-recordings.json" \
           --artifact-url "$SEAL_ARTIFACT_URL"
 
     - name: Write it to this job's summary

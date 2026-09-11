@@ -98,6 +98,20 @@ def test_where_the_recordings_live_reaches_the_rendering():
     assert "--artifact-url" in render["run"]
 
 
+def test_where_each_recording_was_published_reaches_the_rendering():
+    """What lets the comment say "watch this failure" with a link that
+    reaches the recording. Defaulted to an empty object, so a green run and a
+    project that publishes none render the same way -- paths named, archive
+    linked."""
+    inputs = _action()["inputs"]
+    render = next(step for step in _steps() if step["name"] == "Render what the run found")
+
+    assert inputs["recordings"]["required"] is False
+    assert inputs["recordings"]["default"] == "{}"
+    assert render["env"]["SEAL_RECORDINGS"] == "${{ inputs.recordings }}"
+    assert "--recordings " in render["run"]
+
+
 def test_the_comment_and_the_summary_can_each_be_turned_off():
     """Which of them a project wants is the project's. A page nobody asked
     for on every pull request is exactly the inheritance the boundary

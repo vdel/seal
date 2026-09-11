@@ -158,7 +158,8 @@ enumerates them and never goes stale against them.
 | `submodules_token` | Read access for a private git submodule the checkout needs. `GITHUB_TOKEN` is scoped to the calling repository alone, so without it such a submodule fails to clone. Nothing about Seal needs it. |
 | `credentials_env` | Which of the project's credentials environments the run reads -- which store each `.env` reference resolves against. Reaches `seal ci` as `SEAL_CREDENTIALS_ENV`. Left empty, the project's own `default_env` applies. Independent of `k8s_overlay` by design. |
 | `results_artifact` | Name of the artifact the run uploads its results to; defaults to `tests-results`. A name has to be unique within a workflow run, so a repository using this action more than once names each use. |
-| `results_artifact_url` | Where that artifact can be downloaded -- what a comment links so somebody can reach a recording. Empty when nothing was uploaded. |
+| `results_artifact_url` | Where that artifact can be downloaded -- what a comment links for everything not published on its own. Empty when nothing was uploaded. |
+| `recordings` | Where each broken promise's recording was published, as JSON keyed by `<overlay>/<slug>`. `{}` on a green run. |
 | `results_retention_days` | How long that artifact is kept; defaults to 7. It exists for the caller's own reporting job to read in the same run. |
 
 ### What comes back
@@ -186,8 +187,14 @@ to look at, each `path` relative to that run's results and so a path inside
 the artifact. `kind` is `video`, `image`, `trace`, `page` or `log`. The
 `playwright` runner records a video and a screenshot on failure, so a red
 promise has one and a green one has nothing to show. The rendered
-`index.html` plays them where they sit; a comment names the path and links
-the archive, because a file inside a CI artifact has no address of its own.
+`index.html` plays them where they sit.
+
+A file inside a CI artifact has no address of its own, so each broken
+promise's recording is *also* uploaded as an unarchived artifact of its own,
+named after the promise -- five per run at most, since the uploads are
+unrolled. `actions/ci`'s `recordings` output says where each went, and the
+`report` action turns that into a "watch this failure" link per promise.
+`publish_recordings: false` skips those uploads and keeps the page.
 
 `outcomes.read` is `false` where the run was asked not to read them
 (`run_outcomes: false`): `promises` is empty and nothing in the results is a
@@ -211,6 +218,9 @@ on the pull request, use Seal's own `report` action from a job of its own:
       - uses: vdel/seal/actions/report@v0.3
         with:
           results: ${{ needs.tests.outputs.results }}
+          # So a broken promise's line links straight to a video of it.
+          recordings: ${{ needs.tests.outputs.recordings }}
+          artifact_url: ${{ needs.tests.outputs.results_artifact_url }}
           # Which comment a run replaces, so two projects gated in one
           # workflow keep a report each. Defaults to `default`.
           comment_key: my-project

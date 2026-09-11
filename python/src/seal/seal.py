@@ -138,7 +138,7 @@ import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from seal.checks import (
     configured_k8s_dir_name,
@@ -176,6 +176,7 @@ from seal.outcome_suite import (
     NO_VERDICT,
     OUTCOMES_RESULTS_SUBDIR,
     PASSED,
+    RECORDING_KINDS,
     evidence_in,
     UNCONFIRMED,
     UNTRANSLATED,
@@ -387,6 +388,19 @@ MAX_RENDERED_FAILURES = 50
 # nothing to show and a listing of its log per promise would bury the one
 # that does.
 MAX_RENDERED_EVIDENCE = 12
+
+# How many recordings a run publishes under an address of their own. Each
+# one is an upload of its own, and a pipeline has to declare its uploads
+# ahead of knowing how many there will be -- so this is a fixed number of
+# them rather than however many a run produced, and it is pinned against
+# the pipeline that declares them (python/tests/test_ci_action.py).
+#
+# Five, because the number that matters is one: a branch where five promises
+# broke is one somebody reads the whole report for, and the case this exists
+# to serve is the reviewer who wants to watch *the* failure without
+# downloading an archive to find it. Everything past the cap is still in the
+# results artifact, and the count of what was left out is reported.
+MAX_PUBLISHED_RECORDINGS = 5
 
 
 def cmd_tests_results(args: list[str]) -> int:
@@ -664,6 +678,26 @@ def cmd_report(args: list[str]) -> int:
         help="what `seal _tests-results` printed; '-' reads stdin.",
     )
     parser.add_argument("--html", metavar="FILE", default=None)
+    parser.add_argument(
+        "--recordings-list",
+        metavar="FILE",
+        default=None,
+        help=(
+            "where to write what a pipeline should publish under an address "
+            "of its own: one JSON entry per recording a promise this run did "
+            "not see kept left behind, with the name to publish it as."
+        ),
+    )
+    parser.add_argument(
+        "--recordings",
+        metavar="FILE",
+        default=None,
+        help=(
+            "a JSON object mapping what --recordings-list named to where each "
+            "one ended up, so the Markdown can link a failure to its own "
+            "recording rather than to the archive holding it."
+        ),
+    )
     parser.add_argument("--markdown", metavar="FILE", default=None)
     parser.add_argument(
         "--title",
@@ -691,10 +725,10 @@ def cmd_report(args: list[str]) -> int:
     )
     parsed = parser.parse_args(args)
 
-    if not parsed.html and not parsed.markdown:
+    if not parsed.html and not parsed.markdown and not parsed.recordings_list:
         raise SealError(
-            "Error: seal _report renders nothing unless --html or --markdown "
-            "names where to write it."
+            "Error: seal _report renders nothing unless --html, --markdown or "
+            "--recordings-list names where to write it."
         )
 
     raw = sys.stdin.read() if parsed.results == "-" else Path(parsed.results).read_text(
@@ -715,6 +749,20 @@ def cmd_report(args: list[str]) -> int:
             f"a {type(runs).__name__}."
         )
 
+    if parsed.recordings_list:
+        Path(parsed.recordings_list).write_text(
+            json.dumps(_recordings_to_publish(runs), indent=2) + "\n", encoding="utf-8"
+        )
+
+    recordings = {}
+    if parsed.recordings:
+        recordings = json.loads(Path(parsed.recordings).read_text(encoding="utf-8") or "{}")
+        if not isinstance(recordings, dict):
+            raise SealError(
+                "Error: --recordings takes a JSON object mapping a recording to "
+                f"where it was published, and this is a {type(recordings).__name__}."
+            )
+
     if parsed.html:
         Path(parsed.html).write_text(
             reporting.render_html(runs, title=parsed.title, source=parsed.source),
@@ -723,7 +771,10 @@ def cmd_report(args: list[str]) -> int:
     if parsed.markdown:
         Path(parsed.markdown).write_text(
             reporting.render_markdown(
-                runs, title=parsed.title, artifact_url=parsed.artifact_url
+                runs,
+                title=parsed.title,
+                recordings=recordings,
+                artifact_url=parsed.artifact_url
             ),
             encoding="utf-8",
         )
@@ -2146,6 +2197,47 @@ def cmd_outcomes_touched(args: list[str]) -> int:
         "application, the fix is not there yet."
     )
     return 1
+
+
+def _recordings_to_publish(runs: dict) -> list[dict]:
+    """What a pipeline should give an address of its own, in the order a
+    reader wants them.
+
+    One per promise this run did not see kept, and only the first recording
+    it left: a second angle on the same failure is not what somebody is
+    missing, and every published recording costs an upload.
+
+    Each entry carries the `key` the rendering will look the result up under,
+    the `path` inside the run's results, and the `name` to publish it as.
+    The name is built from the run and the slug rather than from the file,
+    because what a runner called it is `video.webm` for every promise in the
+    tree -- and a pipeline that publishes each under its own name needs those
+    to differ, while somebody reading a list of them needs to know which
+    promise broke.
+    """
+    published = []
+    for name, run in runs.items():
+        for promise in reporting.failed_promises(run):
+            recording = next(
+                (
+                    item
+                    for item in promise.get("evidence", [])
+                    if item.get("kind") in RECORDING_KINDS
+                ),
+                None,
+            )
+            if recording is None:
+                continue
+            slug = promise.get("slug", "")
+            suffix = PurePosixPath(recording["path"]).suffix
+            published.append(
+                {
+                    "key": reporting.recording_key(name, slug),
+                    "path": "{}/{}".format(name, recording["path"]),
+                    "name": "{}--{}{}".format(name, slug.replace("/", "--"), suffix),
+                }
+            )
+    return published[:MAX_PUBLISHED_RECORDINGS]
 
 
 def main(argv: list[str] | None = None) -> int:

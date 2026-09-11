@@ -22,6 +22,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from seal.seal import MAX_PUBLISHED_RECORDINGS
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTION = REPO_ROOT / "actions" / "ci" / "action.yml"
 CALLER = REPO_ROOT / ".github" / "workflows" / "internal-example.yml"
@@ -81,6 +83,22 @@ def _invocations_in(script: str) -> list[list[str]]:
 
 def _seal_ci_invocations() -> list[list[str]]:
     return [i for script in _run_scripts() for i in _invocations_in(script)]
+
+
+def _results_upload() -> dict:
+    """The step that uploads the results artifact -- reached by its id, since
+    the recording uploads below are the same action."""
+    return next(step for step in _steps() if step.get("id") == "upload")
+
+
+def _recording_uploads() -> list[dict]:
+    """Every step that publishes one recording on its own."""
+    return [
+        step
+        for step in _steps()
+        if str(step.get("id", "")).startswith("recording")
+        and step.get("uses", "").startswith("actions/upload-artifact")
+    ]
 
 
 def _gate_step() -> dict:
@@ -500,6 +518,73 @@ def test_the_reading_travels_with_the_reports_as_well_as_out_as_an_output():
     assert "$RUNNER_TEMP/seal-results/results.json" in collect["run"]
 
 
+def test_a_recording_is_published_under_an_address_of_its_own():
+    """The point of the whole arrangement: a file inside an artifact has no
+    address, so a link to one is a download to go looking through. Uploaded
+    unarchived, a recording gets a URL that reaches the recording."""
+    uploads = _recording_uploads()
+
+    assert uploads, "nothing publishes a recording on its own"
+    for step in uploads:
+        assert step["with"]["archive"] is False, (
+            "zipped, the URL reaches an archive rather than the video in it"
+        )
+        # A re-run publishes the same names again, and an artifact name has
+        # to be unique within a run.
+        assert step["with"]["overwrite"] is True
+
+
+def test_as_many_addresses_as_the_cli_says_it_will_name():
+    """A composite action cannot loop a `uses:` step, and how many promises
+    broke is not known until the run has finished -- so the uploads are
+    unrolled and their number is fixed. Fixed in two files, which is exactly
+    the kind of agreement that goes quietly wrong: one more upload step than
+    the CLI names is a step that never runs, and one fewer is a recording
+    published nowhere with nothing saying so."""
+    assert len(_recording_uploads()) == MAX_PUBLISHED_RECORDINGS
+
+
+def test_every_published_recording_is_reachable_from_the_promise_that_broke():
+    """The uploads each know their own URL and nothing else. Something has to
+    turn them into one thing a report can look a promise up in -- keyed by
+    run and slug, since two shapes can break the same promise."""
+    collect = next(step for step in _steps() if step.get("id") == "recordings")
+
+    for index in range(1, MAX_PUBLISHED_RECORDINGS + 1):
+        assert "steps.stage.outputs.key{}".format(index) in collect["env"]["SEAL_RECORDINGS"]
+        assert (
+            "steps.recording{}.outputs.artifact-url".format(index)
+            in collect["env"]["SEAL_RECORDINGS"]
+        )
+
+    outputs = _workflow()["outputs"]
+    assert outputs["recordings"]["value"] == "${{ steps.recordings.outputs.published }}"
+
+
+def test_publishing_recordings_can_be_turned_off():
+    """It costs an upload per broken promise and sends the recording's bytes
+    twice, since it stays in the results artifact where the page that plays
+    it lives. A project that would rather not pay that keeps the page."""
+    inputs = _action_inputs()
+
+    assert inputs["publish_recordings"]["required"] is False
+    assert inputs["publish_recordings"]["default"] == "true"
+    stage = next(step for step in _steps() if step.get("id") == "stage")
+    assert "inputs.publish_recordings == 'true'" in stage["if"]
+
+
+def test_which_files_are_recordings_is_the_clis_to_say():
+    """A `find` by extension in the workflow would be a second answer to a
+    classification that lives beside the verdict it belongs to. The staging
+    step copies what the CLI listed, and nothing else."""
+    stage = next(step for step in _steps() if step.get("id") == "stage")
+    render = next(step for step in _steps() if step["name"] == "Render what each run found")
+
+    assert "--recordings-list" in render["run"]
+    assert "seal-recordings.json" in stage["run"]
+    assert ".webm" not in stage["run"] and "find " not in stage["run"]
+
+
 def test_where_the_recordings_can_be_fetched_is_handed_back_too():
     """A file inside a CI artifact has no address of its own -- the artifact
     is one archive, fetched whole -- so this is as close as a report
@@ -507,11 +592,9 @@ def test_where_the_recordings_can_be_fetched_is_handed_back_too():
     the upload step rather than built from a run id, because only the upload
     knows which artifact it created."""
     outputs = _workflow()["outputs"]
-    upload = next(
-        step for step in _steps() if step.get("uses", "").startswith("actions/upload-artifact")
-    )
+    upload = _results_upload()
 
-    assert upload["id"] == "upload"
+    assert upload["uses"].startswith("actions/upload-artifact")
     assert outputs["results_artifact_url"]["value"] == "${{ steps.upload.outputs.artifact-url }}"
 
 
@@ -520,9 +603,7 @@ def test_the_reports_themselves_survive_the_run_that_produced_them():
     it is a string with a size limit, and the coverage sitting beside them
     isn't JUnit at all. A caller wanting either downloads the artifact, so
     the workflow has to name it back."""
-    upload = next(
-        step for step in _steps() if step.get("uses", "").startswith("actions/upload-artifact")
-    )
+    upload = _results_upload()
     inputs = _action_inputs()
 
     assert upload["with"]["name"] == "${{ inputs.results_artifact }}"

@@ -193,6 +193,13 @@ straight from its `.env` files, the same way `seal up` does for local dev,
 so the action never needs to know an app's variable names, or its store's
 name (see `rfcs/0006-credential-resolution.md`).
 
+A promise that broke also gets its recording published under an address of
+its own -- one unarchived artifact per failure, named after the promise, so
+a report can link the video instead of the archive holding it. A file inside
+an artifact has no URL; an artifact does. Five per run at most, since a
+composite action cannot loop an upload step, and `publish_recordings: false`
+turns it off.
+
 What it renders rather than publishes is the results artifact's own page:
 `seal _report` writes a self-contained `index.html` and a `report.md` beside
 the reports, from what `seal _tests-results` already read. That needs no

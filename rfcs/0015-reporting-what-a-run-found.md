@@ -61,9 +61,10 @@ genuinely is theirs to choose.
   from the reading's own output.
 - A promise that failed is reported with what it left behind to look at --
   for the `playwright` runner, a video of the browser and a screenshot,
-  recorded on failure only. The page plays them, because it sits in the
-  same archive; the comment names their paths and links the archive, because
-  a file inside a CI artifact has no address of its own.
+  recorded on failure only. The page plays them, because it sits in the same
+  archive. And because a file inside a CI artifact has no address of its
+  own, each broken promise's recording is *also* uploaded as an unarchived
+  artifact of its own, so the comment can link one per failure.
 - `actions/ci` renders the page into the results artifact it already
   uploads. It still publishes nothing: no check, no comment, no status, not
   even a job summary.
@@ -142,7 +143,7 @@ is really for:
   both and every outside contribution fails over a comment that was never
   possible.
 
-### Why the report carries a recording, and why it cannot link to one
+### Why the report carries a recording, and how it comes to have a link
 
 A verdict says a promise broke. It does not say what the browser did, and
 for a browser-driven test that is most of the work: an assertion that timed
@@ -160,12 +161,41 @@ written to the artifact's root, and the recordings sit under it, so a
 relative `src` resolves once somebody extracts the archive -- no server, no
 network, no viewer to install.
 
-The comment cannot do the same, and this is a platform limit rather than a
-decision: **a file inside a CI artifact has no address of its own.** An
-artifact is one archive, fetched whole. So the comment names each
-recording's path and links the archive, which is the most a comment can
-carry, and the page inside the archive is what opens it. A reader who wants
-to watch a failure downloads one thing and opens one file.
+**A file inside a CI artifact has no address of its own.** An artifact is one
+archive, fetched whole, so a link to a video inside one is a download to go
+looking through. That is the platform, not a decision.
+
+What can be given an address is an artifact. So each broken promise's
+recording is *also* uploaded as an artifact of its own, unarchived -- which
+`actions/upload-artifact` allows for a single file, and which makes the
+artifact's name the file's name. The link then reaches the recording rather
+than an archive containing it, and the comment carries one per failure.
+
+Three things follow, and each is a cost accepted rather than avoided.
+
+**The names have to be made up.** Every runner calls its recording
+`video.webm`, and two artifacts in one run cannot share a name -- so each is
+staged under `<overlay>--<group>--<epic>--<outcome>.webm` before it is
+uploaded. That turns the run's artifact list into a list of what broke,
+which is worth more than the file's original name was.
+
+**The number is fixed.** A composite action cannot loop a `uses:` step, and
+how many promises broke is not known until the run has finished, so the
+uploads are unrolled and there are five of them. The cap is pinned in two
+files at once, which is the kind of agreement that goes quietly wrong -- one
+step too many never runs, one too few publishes nothing and says nothing --
+so a test reads both. Five, because the number that matters is one: a branch
+where five promises broke is one somebody reads the whole report for.
+
+**The bytes travel twice.** The recording stays in the results artifact as
+well, because that is where the page that plays it lives, and a page that
+linked out to a separate artifact per video would be a page that only works
+online. `publish_recordings: false` keeps the page and skips the uploads.
+
+What the comment still names, rather than links, is everything else a
+failure left: the screenshot, the log, the runner's own report. Those are
+read beside a report rather than watched, and the page shows them together
+-- so they stay in the archive and the comment points at it.
 
 What is reported as evidence is deliberately *not* a list of filenames any
 runner was told to produce. A runner writes whatever it writes -- seal has
@@ -216,9 +246,11 @@ indistinguishable from one the tree never declared.
   not. That is the same trade `actions/ci` already makes, and it is confined
   to the same place: nothing in `python/` or `tilt/` knows that GitHub
   exists, and the rendering it consumes is platform-neutral text.
-- A promise that fails now costs a video in the artifact, and a suite where
-  several fail costs several. Bounded by `retain-on-failure` (a green run
-  keeps nothing) and by the artifact's own retention, which a project sets.
+- A promise that fails now costs a video in the artifact, an upload of its
+  own, and that video's bytes twice. A suite where several fail costs
+  several. Bounded by `retain-on-failure` (a green run keeps and uploads
+  nothing), by the five-address cap, and by the artifact retention a project
+  sets -- and `publish_recordings: false` drops the second copy.
 - A project wanting its results somewhere Seal does not render for -- a
   dashboard, a chat channel, a check run with per-test annotations -- still
   builds that from `results` and the artifact, exactly as before. Nothing
@@ -245,12 +277,18 @@ makes every project's runner responsible for a format it has no other use
 for, and it makes the verdict a report rather than the file the runner
 already writes -- two answers to one question again, one layer down.
 
-**Uploading each recording as an artifact of its own, to get a URL per
-file.** It would have made the comment linkable. Rejected: it is one upload
-per failed promise, each with its own retention and its own name in a list
-that is supposed to say what a run found, and it still does not survive the
-artifact expiring. Naming a path inside one archive costs a reader one
-download and keeps the results one thing.
+**Publishing every recording as one extra archive rather than one artifact
+each.** One upload instead of five, and a smaller download than the whole
+results artifact. Rejected: it is still an archive, so it still cannot be
+linked per failure -- which is the entire thing a reader wanted.
+
+**Selecting the files to publish with a glob in the workflow.** It would
+have removed the `--recordings-list` flag and the staging step. Rejected
+twice over: the classification of what counts as a recording lives beside
+the verdict it belongs to, and a `find` by extension in YAML is a second
+answer to it -- and a glob would also root the artifact wherever the matched
+files' common ancestor happens to be, and pick up a screenshot from a
+service's own test results.
 
 **Recording always rather than on failure.** Simpler to explain, and a
 passing run's video is occasionally interesting. Rejected: it is a video per

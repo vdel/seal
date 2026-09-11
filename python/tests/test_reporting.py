@@ -30,7 +30,7 @@ from seal.outcome_suite import (
 from seal.outcome_suite import evidence_in
 from seal.outcomes import QUARANTINE_FILENAME
 from seal.runners import CONFIG_FILENAME, PLAYWRIGHT, RUNNER_FIELD, TAP
-from seal.seal import MAX_RENDERED_FAILURES, main
+from seal.seal import MAX_PUBLISHED_RECORDINGS, MAX_RENDERED_FAILURES, main
 
 GROUP = "ui"
 
@@ -735,3 +735,143 @@ def test_what_came_back_is_classified_by_what_opening_it_does(tmp_path):
         "page",
         "log",
     ]
+
+
+# --- what a pipeline publishes on its own -----------------------------------
+
+
+def _publish_list(project: Path, capsys, tmp_path: Path) -> list[dict]:
+    """What `seal _report --recordings-list` says a pipeline should give an
+    address of its own."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    reading = tmp_path / "results.json"
+    reading.write_text(json.dumps({"dev": read(project, capsys)}), encoding="utf-8")
+    listed = tmp_path / "list.json"
+    assert (
+        main(["_report", "--results", str(reading), "--recordings-list", str(listed)]) == 0
+    )
+    return json.loads(listed.read_text(encoding="utf-8"))
+
+
+def test_a_broken_promises_recording_is_named_for_publishing(tmp_path, capsys):
+    """A file inside an artifact has no address, so a recording worth
+    watching gets an upload of its own. The name is built from the run and
+    the promise because every runner calls its recording `video.webm` -- two
+    artifacts in one run cannot share a name, and a reader looking at a list
+    of them needs to know which promise broke."""
+    tree(tmp_path)
+    promise(
+        tmp_path,
+        "a-deleted-item-stays-deleted",
+        verdict=VERDICT_FAILED,
+        recorded=("artifacts/x/video.webm", "artifacts/x/shot.png"),
+    )
+
+    [entry] = _publish_list(tmp_path, capsys, tmp_path / "out")
+
+    assert entry["key"] == "dev/ui/todo-list/a-deleted-item-stays-deleted"
+    assert entry["name"] == "dev--ui--todo-list--a-deleted-item-stays-deleted.webm"
+    assert entry["path"].startswith("dev/outcomes/ui/todo-list/")
+    assert entry["path"].endswith("video.webm")
+
+
+def test_only_a_recording_is_published_and_only_one_per_promise(tmp_path, capsys):
+    """A screenshot and a log belong beside the report, not under an address
+    of their own -- and a second angle on the same failure is not what
+    somebody is missing. Every published file costs an upload."""
+    tree(tmp_path)
+    promise(
+        tmp_path,
+        "broken",
+        verdict=VERDICT_FAILED,
+        recorded=(
+            "artifacts/x/video.webm",
+            "artifacts/y/video.webm",
+            "artifacts/x/shot.png",
+            "log.txt",
+        ),
+    )
+
+    published = _publish_list(tmp_path, capsys, tmp_path / "out")
+
+    assert len(published) == 1
+    assert published[0]["path"].endswith("video.webm")
+
+
+def test_a_promise_that_held_publishes_nothing(tmp_path, capsys):
+    """Nothing broke, so there is nothing to watch -- and an upload per green
+    promise is a cost paid on every passing pull request."""
+    tree(tmp_path)
+    promise(tmp_path, "kept", verdict=VERDICT_PASSED, recorded=("artifacts/x/video.webm",))
+    write(tmp_path / DEFAULT_RESULTS_DIR_NAME / "api" / "junit.xml", service_report(PASSING))
+
+    assert _publish_list(tmp_path, capsys, tmp_path / "out") == []
+
+
+def test_no_more_are_named_than_a_pipeline_can_publish(tmp_path, capsys):
+    """A pipeline declares its uploads before it knows how many promises
+    broke, so the number it can hand out is fixed. Naming more would name
+    recordings nothing ever publishes, and a report linking one would link
+    nowhere."""
+    tree(tmp_path)
+    for index in range(MAX_PUBLISHED_RECORDINGS + 3):
+        promise(
+            tmp_path,
+            "broken-{}".format(index),
+            verdict=VERDICT_FAILED,
+            recorded=("artifacts/x/video.webm",),
+        )
+
+    published = _publish_list(tmp_path, capsys, tmp_path / "out")
+
+    assert len(published) == MAX_PUBLISHED_RECORDINGS
+
+
+def test_a_published_recording_is_linked_from_the_failure_it_belongs_to(tmp_path, capsys):
+    """The line the whole arrangement exists for: one click from the comment
+    to the video, rather than a download to go looking through."""
+    tree(tmp_path)
+    promise(tmp_path, "broken", verdict=VERDICT_FAILED, recorded=("artifacts/x/video.webm",))
+    runs = {"dev": read(tmp_path, capsys)}
+
+    comment = reporting.render_markdown(
+        runs,
+        recordings={"dev/ui/todo-list/broken": "https://ci.invalid/artifacts/9001"},
+    )
+
+    assert "▶ [watch this failure](https://ci.invalid/artifacts/9001)" in comment
+    # And the path to the same file drops out: naming it under a link
+    # somebody was just offered in one click is noise.
+    assert "video.webm" not in comment
+
+
+def test_a_recording_is_never_shown_under_the_wrong_shapes_failure(tmp_path, capsys):
+    """Two overlays verified in one pipeline can break the same promise. A
+    recording keyed by slug alone would show one shape's video under the
+    other's failure, which is worse than showing none."""
+    tree(tmp_path)
+    promise(tmp_path, "broken", verdict=VERDICT_FAILED, recorded=("artifacts/x/video.webm",))
+    one = read(tmp_path, capsys)
+    runs = {"dev": one, "non-dev": one}
+
+    comment = reporting.render_markdown(
+        runs, recordings={"dev/ui/todo-list/broken": "https://ci.invalid/a/1"}
+    )
+
+    # One link, under the shape it was recorded on; the other shape names the
+    # path instead.
+    assert comment.count("watch this failure") == 1
+    assert "non-dev/outcomes/ui/todo-list/broken" in comment
+
+
+def test_a_comment_with_nothing_published_still_says_where_to_look(tmp_path, capsys):
+    """A project that turned publishing off, or a pipeline that could not.
+    The paths are still what gets somebody to the file."""
+    tree(tmp_path)
+    promise(tmp_path, "broken", verdict=VERDICT_FAILED, recorded=("artifacts/x/video.webm",))
+    runs = {"dev": read(tmp_path, capsys)}
+
+    comment = reporting.render_markdown(runs, recordings={})
+
+    assert "watch this failure" not in comment
+    assert "video: `dev/outcomes/ui/todo-list/broken/artifacts/x/video.webm`" in comment

@@ -62,6 +62,8 @@ jobs:
     # step that ran it; a job's belong to whatever `needs:` it.
     outputs:
       results: ${{ steps.seal.outputs.results }}
+      recordings: ${{ steps.seal.outputs.recordings }}
+      results_artifact_url: ${{ steps.seal.outputs.results_artifact_url }}
     steps:
       - uses: actions/checkout@v6
 
@@ -95,6 +97,9 @@ jobs:
       - uses: vdel/seal/actions/report@<ref>
         with:
           results: ${{ needs.tests.outputs.results }}
+          # So a broken promise's line links straight to a video of it.
+          recordings: ${{ needs.tests.outputs.recordings }}
+          artifact_url: ${{ needs.tests.outputs.results_artifact_url }}
 ```
 
 Note what isn't there: **your application's variable and secret names**, and
@@ -122,6 +127,7 @@ repository, so the CLI is already beside it, at the revision `<ref>` names.
 | `provider_setup` | no | Shell run before `seal ci`, putting every CLI your `seal-credentials-config.json` names on `PATH` and authenticating it. `provider_token` reaches it as `$SEAL_PROVIDER_TOKEN`. Empty by default, and correct empty: a project whose `.env` files hold only literals and `k8s://` markers reaches no provider and needs no CLI. |
 | `credentials_env` | no | Which of your credentials environments this run reads -- which store each `.env` reference resolves against, per your own `seal-credentials-config.json`. Reaches `seal ci` as `SEAL_CREDENTIALS_ENV`. Left empty, your `default_env` applies. Deliberately independent of `k8s_overlay`: deriving one from the other would make a production-shaped overlay on a throwaway cluster reach real secrets. |
 | `results_artifact` | no | Name of the artifact the run uploads its results to. Defaults to `tests-results`. An artifact name has to be unique within a workflow run, so give each use its own name if you use this action more than once. |
+| `publish_recordings` | no | Whether each broken promise's recording also gets an artifact of its own, so a report can link straight to it -- `true` or `false`, `true` by default. Costs one upload per broken promise and sends the recording's bytes twice, since it stays in the results artifact where the page that plays it lives. |
 | `results_retention_days` | no | How long that artifact is kept. Defaults to 7: it exists for your own reporting job to read in the same run. |
 | `provider_token` | no | One credential for `provider_setup` to authenticate with, reaching it as `$SEAL_PROVIDER_TOKEN`. What it opens, and which store, is your project's business. Passed by value: read it from `secrets` in your own job, which is what binds the Environment it resolves against. |
 | `submodules_token` | no | Read access to whatever the checkout needs beyond your own repository -- a private git submodule your project vendors. `GITHUB_TOKEN` is scoped to the repository whose workflow is running and can read no other, so without this such a submodule fails to clone with a bare "Repository not found" before any later step runs. Nothing about Seal itself needs it: the CLI is this action's own repository, checked out beside it. |
@@ -145,7 +151,8 @@ why.
 | `overlays` | The overlays this run verified, as a JSON list. What to matrix a per-shape report over. Empty if the run died before it could say which shapes it was going to run -- guard on that, because `fromJSON('')` fails the job reading it. |
 | `results` | What every run found, as one line of JSON keyed by overlay. `{}` when no run was asked to read anything (both switches off) -- an absence of reports by design, not a run that lost them, so the job's own status is the whole of what such a run says. |
 | `results_artifact` | Name of the artifact holding the reports themselves, the reading, and the rendered page. Nothing is uploaded when a run failed before producing any results, so guard your download step. |
-| `results_artifact_url` | Where that artifact can be downloaded. A file inside it has no address of its own -- an artifact is one archive, fetched whole -- so this is as close as a report published outside the run can get to a recording. Empty when nothing was uploaded. |
+| `results_artifact_url` | Where that artifact can be downloaded. Empty when nothing was uploaded. |
+| `recordings` | Where each broken promise's recording was published, as JSON keyed by `<overlay>/<slug>`. What a report links to say "watch this failure". `{}` on a green run, or where `publish_recordings` is off. |
 
 `results` is shaped like this:
 
@@ -268,11 +275,39 @@ viewer -- so it is left to a project that wants it:
 
 Traces land beside the videos and are reported the same way.
 
-**A file inside a CI artifact has no address of its own.** An artifact is one
-archive, fetched whole, so nothing can link straight to a video. The comment
-names each recording's path and links the archive; the page inside the
-archive is what opens it. That is the whole of what is possible here, and
-`actions/report` does it.
+### Watching one from GitHub, without a download
+
+A file inside a CI artifact has no address of its own: an artifact is one
+archive, fetched whole, so a link to a video *inside* one is a download to go
+looking through.
+
+So each broken promise's recording is **also** published as an artifact of
+its own, unarchived — which `actions/upload-artifact` allows for a single
+file, and which makes the artifact's name the file's name. Each one is named
+after the promise it belongs to, so the run's artifact list reads as a list
+of what broke:
+
+```
+dev--ui--todo-list--a-deleted-item-stays-deleted.webm
+```
+
+`actions/ci` hands back where each went in its `recordings` output, and
+`actions/report` puts that in the comment as a link per failure:
+
+> - `ui/todo-list/a-deleted-item-stays-deleted` — FAIL: a deleted item stays deleted
+>   - ▶ watch this failure &nbsp;*(a link to the recording itself)*
+
+**The link reaches the recording rather than an archive containing it.**
+Whether your browser plays it there or saves it is the browser's call on the
+content type — either way there is no archive to open and nothing to go
+looking through.
+
+| | |
+| --- | --- |
+| How many | Five per run, at most. A composite action can't loop an upload step and a run doesn't know how many promises broke until it has finished, so the number of addresses is fixed. Past that, the recordings are still in the results artifact. |
+| Which files | The videos, one per broken promise. Screenshots, logs and traces stay with the results, where the page shows them together. |
+| What it costs | One upload per broken promise, and the recording's bytes travelling twice — it stays in the results artifact too, since that is where the page that plays it lives. `publish_recordings: false` keeps the page and skips the uploads. |
+| On a green run | Nothing. There is no recording to publish, so no upload happens and the comment has no link to make. |
 
 ### One comment, updated in place
 
@@ -306,6 +341,8 @@ needs `pull-requests: write` and the gate has no business holding it:
 | `comment` | no | Whether to post and update the pull-request comment. `'true'` by default; compared as a string, so anything else turns it off. |
 | `comment_key` | no | Which comment a run replaces. Defaults to `default`. Give each use its own if you gate two projects in one workflow, or each will overwrite the other's report. |
 | `job_summary` | no | Whether to write the rendering to this job's summary page. `'true'` by default, and needs no permissions. |
+| `recordings` | no | The `recordings` output of `actions/ci`, so each failure's line links straight to its own recording. |
+| `artifact_url` | no | The `results_artifact_url` output of `actions/ci`, so the comment can link the archive holding everything else. |
 | `source` | no | What names the run -- a commit, a branch, a URL. Rendered verbatim on the page. |
 | `token` | no | What the comment authenticates as. Defaults to the job's own `GITHUB_TOKEN`. |
 
