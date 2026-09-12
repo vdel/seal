@@ -199,6 +199,13 @@ published after them, because a project only has one where it asked to
 record its passes -- and a project that turns that on in order to watch a
 green suite would otherwise turn a switch on and see nothing for it.
 
+A kept promise's recording is linked too, under a heading of its own rather
+than mixed in with the failures: what a reviewer needs is what broke, and
+watching a suite that passed is somebody checking it exercises what they
+think it does. Without that heading the switch would be on and invisible --
+the recordings published and sitting in a run's artifact list nobody thought
+to open.
+
 What the comment still names, rather than links, is everything else a
 failure left: the screenshot, the log, the runner's own report. Those are
 read beside a report rather than watched, and the page shows them together

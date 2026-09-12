@@ -324,7 +324,7 @@ looking through.
 | How many | Five per run, at most. A composite action can't loop an upload step and a run doesn't know how many promises broke until it has finished, so the number of addresses is fixed. Past that, the recordings are still in the results artifact. |
 | Which files | The videos, one per promise that left one -- broken promises first, so the addresses go where somebody is looking. A kept promise has no recording unless `record_outcome_video_on_success` asked for one, which is how a project turning that on sees that it worked. |
 | What it costs | One upload per broken promise, and the recording's bytes travelling twice — it stays in the results artifact too, since that is where the page that plays it lives. `publish_recordings: false` keeps the page and skips the uploads. |
-| On a green run | Nothing, by default -- no recording exists, so no upload happens and the comment has no link to make. With `record_outcome_video_on_success` on, the kept promises' recordings are published and appear in the run's artifact list. |
+| On a green run | Nothing, by default -- no recording exists, so no upload happens and the comment has no link to make. With `record_outcome_video_on_success` on, the kept promises' recordings are published, and the comment grows a **Watch the promises that held** list so they are not sitting in an artifact list nobody opened. |
 
 ### One comment, updated in place
 

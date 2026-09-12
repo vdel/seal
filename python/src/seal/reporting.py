@@ -565,6 +565,39 @@ def _html_services(run: dict) -> str:
 # -- Markdown ---------------------------------------------------------------
 
 
+def _markdown_kept_recordings(
+    run_name: str, run: dict, recordings: dict
+) -> list[str]:
+    """Where to watch the promises that held, when a pipeline published
+    them.
+
+    Absent unless a project asked to record its passes and something
+    published them, which is the only case this has anything to say. And
+    worth saying there: a project turns that switch on in order to watch a
+    green suite, and a comment silent about it leaves the recordings sitting
+    in a run's artifact list that nobody thought to open.
+
+    Separate from the failures above rather than mixed in with them. What a
+    reviewer needs is what broke; this is somebody checking that a suite
+    exercises what they think it does, which is a different errand.
+    """
+    kept = [
+        (promise, recordings[recording_key(run_name, promise.get("slug", ""))])
+        for promise in promises(run)
+        if promise.get("state") == PASSED
+        and recording_key(run_name, promise.get("slug", "")) in recordings
+    ]
+    if not kept:
+        return []
+    lines = ["**Watch the promises that held**", ""]
+    for promise, url in kept[:MAX_LISTED_PROMISES]:
+        lines.append("- ▶ [{}]({})".format(promise.get("slug", ""), url))
+    if len(kept) > MAX_LISTED_PROMISES:
+        lines.append("- and {} more".format(len(kept) - MAX_LISTED_PROMISES))
+    lines.append("")
+    return lines
+
+
 def _markdown_overview(runs: dict) -> str:
     if not runs:
         return (
@@ -674,6 +707,8 @@ def _markdown_run(name: str, run: dict, recordings: dict | None = None) -> list[
         if len(broken) > MAX_LISTED_PROMISES:
             lines.append("- and {} more".format(len(broken) - MAX_LISTED_PROMISES))
         lines.append("")
+
+    lines.extend(_markdown_kept_recordings(name, run, recordings or {}))
 
     for source in failed_sources(run):
         lines.append(

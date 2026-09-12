@@ -913,3 +913,54 @@ def test_a_comment_with_nothing_published_still_says_where_to_look(tmp_path, cap
 
     assert "watch this failure" not in comment
     assert "video: `dev/outcomes/ui/todo-list/broken/artifacts/x/video.webm`" in comment
+
+
+def test_a_kept_promises_recording_is_linked_where_one_was_published(tmp_path, capsys):
+    """A project turns success recording on in order to watch a green suite.
+    A comment silent about it leaves those recordings in a run's artifact
+    list that nobody thought to open -- which is the switch being on and
+    invisible."""
+    tree(tmp_path)
+    promise(tmp_path, "kept", verdict=VERDICT_PASSED, recorded=("artifacts/x/video.webm",))
+    runs = {"dev": read(tmp_path, capsys)}
+
+    comment = reporting.render_markdown(
+        runs, recordings={"dev/ui/todo-list/kept": "https://ci.invalid/a/1"}
+    )
+
+    assert "Watch the promises that held" in comment
+    assert "▶ [ui/todo-list/kept](https://ci.invalid/a/1)" in comment
+
+
+def test_a_green_run_with_nothing_published_says_nothing_about_recordings(
+    tmp_path, capsys
+):
+    """The default. A project that did not ask to record its passes has no
+    recording on a kept promise, and a comment inviting somebody to watch
+    one would be inviting them to nothing."""
+    tree(tmp_path)
+    promise(tmp_path, "kept", verdict=VERDICT_PASSED)
+    write(tmp_path / DEFAULT_RESULTS_DIR_NAME / "api" / "junit.xml", service_report(PASSING))
+    runs = {"dev": read(tmp_path, capsys)}
+
+    comment = reporting.render_markdown(runs, recordings={})
+
+    assert "Watch the promises that held" not in comment
+
+
+def test_a_failures_recording_is_not_listed_again_under_the_ones_that_held(
+    tmp_path, capsys
+):
+    """Two different errands: what a reviewer needs is what broke, and this
+    is somebody checking a suite exercises what they think it does. A failure
+    already has its own line."""
+    tree(tmp_path)
+    promise(tmp_path, "broken", verdict=VERDICT_FAILED, recorded=("artifacts/x/video.webm",))
+    runs = {"dev": read(tmp_path, capsys)}
+
+    comment = reporting.render_markdown(
+        runs, recordings={"dev/ui/todo-list/broken": "https://ci.invalid/a/1"}
+    )
+
+    assert "watch this failure" in comment
+    assert "Watch the promises that held" not in comment
