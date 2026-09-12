@@ -177,7 +177,7 @@ inputs:
   record_outcome_video_on_failure:
     description: >
       Whether a promise the run does not see kept keeps a video of its
-      browser -- "true" or "false".
+      browser -- "true" or "false", true by default.
 
       This is what a red promise costs somebody: an assertion that timed out
       waiting for a selector reads the same whether the page never loaded,
@@ -189,7 +189,7 @@ inputs:
   record_outcome_video_on_success:
     description: >
       Whether a promise the run *does* see kept keeps one too -- "true" or
-      "false".
+      "false", false by default.
 
       For checking that a suite exercises what somebody thinks it does: a
       test can pass through the wrong page. It costs a video per promise on
@@ -200,7 +200,7 @@ inputs:
       `record_outcome_video_on_failure` is refused rather than quietly
       keeping both.
     required: false
-    default: 'true'
+    default: 'false'
   publish_recordings:
     description: >
       Whether to publish each broken promise's recording under an address of

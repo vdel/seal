@@ -131,7 +131,7 @@ repository, so the CLI is already beside it, at the revision `<ref>` names.
 | `credentials_env` | no | Which of your credentials environments this run reads -- which store each `.env` reference resolves against, per your own `seal-credentials-config.json`. Reaches `seal ci` as `SEAL_CREDENTIALS_ENV`. Left empty, your `default_env` applies. Deliberately independent of `k8s_overlay`: deriving one from the other would make a production-shaped overlay on a throwaway cluster reach real secrets. |
 | `results_artifact` | no | Name of the artifact the run uploads its results to. Defaults to `tests-results`. An artifact name has to be unique within a workflow run, so give each use its own name if you use this action more than once. |
 | `record_outcome_video_on_failure` | no | Whether a promise the run doesn't see kept keeps a video of its browser -- `true` or `false`, `true` by default. Reaches the runner as `seal ci -- --record_outcome_video_on_failure`. |
-| `record_outcome_video_on_success` | no | Whether a promise the run *does* see kept keeps one too -- `true` or `false`, `true` by default. For checking the suite exercises what you think it does: a test can pass through the wrong page. Costs a video per promise on every green run, so it is worth turning off once a suite is trusted. Without `record_outcome_video_on_failure` the run is refused: nothing records a pass and discards a failure. |
+| `record_outcome_video_on_success` | no | Whether a promise the run *does* see kept keeps one too -- `true` or `false`, `false` by default. For checking the suite exercises what you think it does: a test can pass through the wrong page. Costs a video per promise on every green run, so it is worth turning off once a suite is trusted. Without `record_outcome_video_on_failure` the run is refused: nothing records a pass and discards a failure. |
 | `publish_recordings` | no | Whether each broken promise's recording also gets an artifact of its own, so a report can link straight to it -- `true` or `false`, `true` by default. Costs one upload per broken promise and sends the recording's bytes twice, since it stays in the results artifact where the page that plays it lives. |
 | `results_retention_days` | no | How long that artifact is kept. Defaults to 7: it exists for your own reporting job to read in the same run. |
 | `provider_token` | no | One credential for `provider_setup` to authenticate with, reaching it as `$SEAL_PROVIDER_TOKEN`. What it opens, and which store, is your project's business. Passed by value: read it from `secrets` in your own job, which is what binds the Environment it resolves against. |
@@ -272,7 +272,7 @@ Which runs keep a video is yours to say, with two inputs:
 
 | `record_outcome_video_on_failure` | `record_outcome_video_on_success` | What happens |
 | --- | --- | --- |
-| `true` | `false` | A broken promise keeps its recording; a kept one records and discards. |
+| `true` | `false` | The default. A broken promise keeps its recording; a kept one records and discards. |
 | `true` | `true` | Every promise keeps one — for checking the suite exercises what you think it does. |
 | `false` | `false` | Nothing is recorded at all, so no run pays the encoding. |
 | `false` | `true` | Refused. Nothing records a pass and discards a failure: keeping the passes means keeping the failures too. |
@@ -313,10 +313,14 @@ dev--ui--todo-list--a-deleted-item-stays-deleted.webm
 ```
 
 `actions/ci` hands back where each went in its `recordings` output, and
-`actions/report` puts that in the comment as a link per failure:
+`actions/report` puts that in the comment as a link per failure — beside a
+link to the promise itself, which is what `project_url` is for:
 
-> - `ui/todo-list/a-deleted-item-stays-deleted` — FAIL: a deleted item stays deleted
->   - ▶ watch this failure &nbsp;*(a link to the recording itself)*
+> - [ui/todo-list/a-deleted-item-stays-deleted](https://github.com/you/your-project/tree/1a2b3c4/my-project/outcomes/ui/todo-list/a-deleted-item-stays-deleted) — FAIL: a deleted item stays deleted ([▶see video](https://github.com/you/your-project/actions/runs/1/artifacts/2))
+
+The promise's name reaches its own directory — the prompt it was written
+from, beside the test translated from it — at the commit under test, because
+a slug on its own says nothing to a reviewer who has never opened the tree.
 
 **The link reaches the recording rather than an archive containing it.**
 Whether your browser plays it there or saves it is the browser's call on the

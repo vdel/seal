@@ -609,6 +609,21 @@ def test_a_project_says_which_runs_are_recorded(inputs, when):
     assert "type" not in inputs[name]
 
 
+def test_a_failure_is_recorded_by_default_and_a_pass_is_not(inputs):
+    """What a project gets without saying anything, and the same answer the
+    extension gives a run that passes neither flag (tilt/seal/config.Tiltfile).
+
+    A red promise is what somebody has to understand, and an assertion that
+    timed out waiting for a selector reads the same whether the page never
+    loaded or loaded the right thing behind a dialog -- so a failure is
+    recorded. A green run's footage is things working: it costs a video per
+    promise on every run and nobody watches it, so recording the passes is
+    asked for rather than given.
+    """
+    assert inputs["record_outcome_video_on_failure"]["default"] == "true"
+    assert inputs["record_outcome_video_on_success"]["default"] == "false"
+
+
 def test_the_recording_switches_reach_every_run_that_reads_a_promise():
     """Passed through to the extension rather than acted on here: what the
     pair means is one answer, and it lives beside the config that generates
