@@ -64,6 +64,7 @@ jobs:
       results: ${{ steps.seal.outputs.results }}
       recordings: ${{ steps.seal.outputs.recordings }}
       results_artifact_url: ${{ steps.seal.outputs.results_artifact_url }}
+      project_url: ${{ steps.seal.outputs.project_url }}
     steps:
       - uses: actions/checkout@v6
 
@@ -100,6 +101,8 @@ jobs:
           # So a broken promise's line links straight to a video of it.
           recordings: ${{ needs.tests.outputs.recordings }}
           artifact_url: ${{ needs.tests.outputs.results_artifact_url }}
+          # So each promise's name links to what it promises.
+          project_url: ${{ needs.tests.outputs.project_url }}
 ```
 
 Note what isn't there: **your application's variable and secret names**, and
@@ -155,6 +158,7 @@ why.
 | `results_artifact` | Name of the artifact holding the reports themselves, the reading, and the rendered page. Nothing is uploaded when a run failed before producing any results, so guard your download step. |
 | `results_artifact_url` | Where that artifact can be downloaded. Empty when nothing was uploaded. |
 | `recordings` | Where each broken promise's recording was published, as JSON keyed by `<overlay>/<slug>`. What a report links to say "watch this failure". `{}` on a green run, or where `publish_recordings` is off. |
+| `project_url` | Where this project's files are browsed at the revision under test. What lets a report link a promise's name to the promise itself -- its prompt, beside the test translated from it -- instead of naming a slug. |
 
 `results` is shaped like this:
 
@@ -360,6 +364,7 @@ needs `pull-requests: write` and the gate has no business holding it:
 | `job_summary` | no | Whether to write the rendering to this job's summary page. `'true'` by default, and needs no permissions. |
 | `recordings` | no | The `recordings` output of `actions/ci`, so each failure's line links straight to its own recording. |
 | `artifact_url` | no | The `results_artifact_url` output of `actions/ci`, so the comment can link the archive holding everything else. |
+| `project_url` | no | The `project_url` output of `actions/ci`, so each promise's name is a link to the promise itself. Empty names them without linking. |
 | `source` | no | What names the run -- a commit, a branch, a URL. Rendered verbatim on the page. |
 | `token` | no | What the comment authenticates as. Defaults to the job's own `GITHUB_TOKEN`. |
 

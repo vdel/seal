@@ -54,8 +54,15 @@ genuinely is theirs to choose.
 - One reader per kind of result, and it is the one whose answer the gate
   used: `junit.py` for a service's own tests, `outcome_suite.py` for a
   promise. `seal _tests-results` reads through both and hands back what they
-  say -- now including a line per promise, by slug and by headline, in
-  whichever of the four states it is in.
+  say -- a line per promise, by slug and by headline, in whichever of the
+  four states it is in, and where in the project the promise itself lives.
+- A promise's name is a link to the promise. A slug is how the tree spells
+  it and says nothing to a reviewer who has never opened the tree; what they
+  want next is what the application actually promised, which is the prompt
+  sitting beside the test translated from it. The reading says where each
+  promise is relative to the project root, and the pipeline says where the
+  project is browsed (`actions/ci`'s `project_url`) -- so the renderer joins
+  two facts and neither side has to know the other's.
 - One renderer, downstream of that reading and of nothing else:
   `seal _report` writes a self-contained HTML page and a Markdown summary
   from the reading's own output.

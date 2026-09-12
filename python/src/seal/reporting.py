@@ -79,7 +79,12 @@ MAX_LISTED_EVIDENCE = 3
 DEFAULT_TITLE = "Seal test results"
 
 
-def render_html(runs: dict, title: str = DEFAULT_TITLE, source: str = "") -> str:
+def render_html(
+    runs: dict,
+    title: str = DEFAULT_TITLE,
+    source: str = "",
+    project_url: str = "",
+) -> str:
     """One self-contained page for every run, holding everything.
 
     `source` is whatever names the run this came from -- a commit, a branch,
@@ -92,7 +97,7 @@ def render_html(runs: dict, title: str = DEFAULT_TITLE, source: str = "") -> str
         _html_overview(runs),
     ]
     for name, run in runs.items():
-        body.append(_html_run(name, run))
+        body.append(_html_run(name, run, project_url))
     return _HTML_DOCUMENT.format(
         title=html.escape(title), style=_STYLE, body="\n".join(part for part in body if part)
     )
@@ -103,6 +108,7 @@ def render_markdown(
     title: str = DEFAULT_TITLE,
     recordings: dict | None = None,
     artifact_url: str = "",
+    project_url: str = "",
 ) -> str:
     """The same runs, short enough to be a comment.
 
@@ -119,13 +125,19 @@ def render_markdown(
     `artifact_url` is the archive itself, for everything that was not
     published on its own: the screenshots, the logs, and the page that plays
     the recordings where they sit.
+
+    `project_url` is where this project's own files are browsed, which is
+    what turns each promise's name into a link to the promise itself -- the
+    prompt it was written from, beside the test translated from it. Only the
+    pipeline knows it, and a rendering given none names the promises without
+    linking them.
     """
     recordings = recordings or {}
     lines = ["## {}".format(title), ""]
     lines.append(_markdown_overview(runs))
     lines.append("")
     for name, run in runs.items():
-        lines.extend(_markdown_run(name, run, recordings))
+        lines.extend(_markdown_run(name, run, recordings, project_url))
     if artifact_url and any(
         evidence(name, promise)
         for name, run in runs.items()
@@ -221,6 +233,28 @@ def evidence(run_name: str, promise: dict) -> list[dict]:
         {**item, "href": "{}/{}".format(run_name, item.get("path", ""))}
         for item in promise.get("evidence", [])
     ]
+
+
+def promise_url(promise: dict, project_url: str) -> str:
+    """Where this promise itself is browsed, when the pipeline said where
+    this project is.
+
+    A slug is the tree's own spelling of a promise and means nothing to
+    somebody who has never opened the tree. The promise's directory holds
+    what it actually says -- the prompt -- and the test translated from it,
+    which is the next thing anybody asks about a promise they don't
+    recognise.
+
+    The reading says where each promise lives relative to the project root
+    (see seal._rendered_promise_path); what a project root is reachable at
+    is a fact about the pipeline, so it is passed in. Empty where either
+    half is missing, which every caller renders as a name rather than a
+    link.
+    """
+    path = promise.get("path", "")
+    if not project_url or not path:
+        return ""
+    return "{}/{}".format(project_url.rstrip("/"), path)
 
 
 def failed_sources(run: dict) -> list[dict]:
@@ -374,7 +408,7 @@ def _shapes(count: int) -> str:
     return "{} run{}".format(count, "" if count == 1 else "s")
 
 
-def _html_run(name: str, run: dict) -> str:
+def _html_run(name: str, run: dict, project_url: str = "") -> str:
     passed = run_passed(run)
     parts = [
         '<h2>{} <span class="verdict {}">{}</span></h2>'.format(
@@ -386,7 +420,7 @@ def _html_run(name: str, run: dict) -> str:
     listed_problems = problems(run)
     if listed_problems:
         parts.append(_html_problems(listed_problems))
-    parts.append(_html_outcomes(name, run))
+    parts.append(_html_outcomes(name, run, project_url))
     parts.append(_html_services(run))
     return "\n".join(parts)
 
@@ -401,7 +435,7 @@ def _html_problems(problems: list) -> str:
     )
 
 
-def _html_outcomes(run_name: str, run: dict) -> str:
+def _html_outcomes(run_name: str, run: dict, project_url: str = "") -> str:
     """Every promise this run read, by state.
 
     The whole tree, not just what broke: "these 47 promises still hold" is
@@ -441,7 +475,7 @@ def _html_outcomes(run_name: str, run: dict) -> str:
         rows.append(
             '<tr><td class="slug">{slug}</td><td class="state {css}">{state}{note}</td>'
             "<td>{headline}{detail}</td></tr>".format(
-                slug=html.escape(str(promise.get("slug", ""))),
+                slug=_html_slug(promise, project_url),
                 css=_STATE_CLASS.get(state, "absent"),
                 state=html.escape(state),
                 note=note,
@@ -455,6 +489,20 @@ def _html_outcomes(run_name: str, run: dict) -> str:
         "<table><thead><tr><th>Outcome</th><th>State</th><th>What it promises</th>"
         "</tr></thead><tbody>{rows}</tbody></table>"
     ).format(summary=html.escape(summary or "none declared"), rows="".join(rows))
+
+
+def _html_slug(promise: dict, project_url: str) -> str:
+    """The promise's name, linked to the promise itself where the pipeline
+    said where this project is browsed.
+
+    The page is read from an extracted artifact, so this is the one link on
+    it that reaches somewhere other than a file beside it -- and it reaches
+    what the promise actually says, which is what somebody looking at a slug
+    they don't recognise needs.
+    """
+    slug = html.escape(str(promise.get("slug", "")))
+    url = promise_url(promise, project_url)
+    return '<a href="{}">{}</a>'.format(html.escape(url, quote=True), slug) if url else slug
 
 
 def _html_evidence(run_name: str, promise: dict) -> str:
@@ -565,8 +613,31 @@ def _html_services(run: dict) -> str:
 # -- Markdown ---------------------------------------------------------------
 
 
+def _markdown_promise(promise: dict, project_url: str) -> str:
+    """One promise's name, linked to the promise itself where it can be.
+
+    Backticked rather than linked where the pipeline said nothing about
+    where this project is browsed: a slug is a path in a tree, and prose
+    that runs it together with the rest of a sentence is unreadable.
+    """
+    slug = str(promise.get("slug", ""))
+    url = promise_url(promise, project_url)
+    return "[{}]({})".format(slug, url) if url else "`{}`".format(slug)
+
+
+def _markdown_watch(url: str) -> str:
+    """The one click that answers what the browser actually did.
+
+    Parenthesised at the end of the promise's own line rather than given a
+    line of its own: what a reader scans is which promises broke, and a
+    listing where every entry is two lines halves how much of it fits in a
+    comment.
+    """
+    return "([▶see video]({}))".format(url)
+
+
 def _markdown_kept_recordings(
-    run_name: str, run: dict, recordings: dict
+    run_name: str, run: dict, recordings: dict, project_url: str = ""
 ) -> list[str]:
     """Where to watch the promises that held, when a pipeline published
     them.
@@ -607,7 +678,11 @@ def _markdown_kept_recordings(
     ]
     lines = ["**Watch the promises that held**", ""]
     for promise, url in published[:MAX_LISTED_PROMISES]:
-        lines.append("- ▶ [{}]({})".format(promise.get("slug", ""), url))
+        lines.append(
+            "- {}: {}".format(
+                _markdown_promise(promise, project_url), _markdown_watch(url)
+            )
+        )
     elsewhere = len(recorded) - min(len(published), MAX_LISTED_PROMISES)
     if elsewhere:
         lines.append(
@@ -630,7 +705,12 @@ def _markdown_overview(runs: dict) -> str:
     return "**{} of {} failed.**".format(total - passed, _shapes(total))
 
 
-def _markdown_run(name: str, run: dict, recordings: dict | None = None) -> list[str]:
+def _markdown_run(
+    name: str,
+    run: dict,
+    recordings: dict | None = None,
+    project_url: str = "",
+) -> list[str]:
     """One run, worst news first.
 
     Everything here is capped, and every cap is stated: a comment is the one
@@ -687,22 +767,21 @@ def _markdown_run(name: str, run: dict, recordings: dict | None = None) -> list[
         lines.append("")
         for promise in broken[:MAX_LISTED_PROMISES]:
             note = " _(quarantined)_" if promise.get("quarantined") else ""
-            lines.append(
-                "- `{}` — {}{}{}".format(
-                    promise.get("slug", ""),
-                    promise.get("state", ""),
-                    note,
-                    ": {}".format(promise["headline"]) if promise.get("headline") else "",
-                )
-            )
             # Where the recording of this failure was published, when it
-            # was: one click, no archive to open. This is the line the whole
+            # was: one click, no archive to open. This is the link the whole
             # arrangement exists for.
             published = (recordings or {}).get(
                 recording_key(name, promise.get("slug", ""))
             )
-            if published:
-                lines.append("  - ▶ [watch this failure]({})".format(published))
+            lines.append(
+                "- {} — {}{}{}{}".format(
+                    _markdown_promise(promise, project_url),
+                    promise.get("state", ""),
+                    note,
+                    ": {}".format(promise["headline"]) if promise.get("headline") else "",
+                    " {}".format(_markdown_watch(published)) if published else "",
+                )
+            )
             # And what else it left, named rather than linked: a file inside
             # a CI artifact has no address of its own, so the path is what
             # lets somebody find it once the archive is open.
@@ -728,7 +807,9 @@ def _markdown_run(name: str, run: dict, recordings: dict | None = None) -> list[
             lines.append("- and {} more".format(len(broken) - MAX_LISTED_PROMISES))
         lines.append("")
 
-    lines.extend(_markdown_kept_recordings(name, run, recordings or {}))
+    lines.extend(
+        _markdown_kept_recordings(name, run, recordings or {}, project_url)
+    )
 
     for source in failed_sources(run):
         lines.append(

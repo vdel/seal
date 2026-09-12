@@ -91,6 +91,17 @@ inputs:
       somebody needs to find them.
     required: false
     default: ''
+  project_url:
+    description: >
+      Where this project's own files are browsed at the revision these
+      results are about -- the `project_url` output of `actions/ci`.
+
+      What lets each promise's name be a link to the promise itself: the
+      prompt it was written from, beside the test translated from it. A slug
+      is how the tree spells a promise and tells a reviewer who has never
+      opened it nothing. Empty names the promises without linking them.
+    required: false
+    default: ''
   source:
     description: >
       What names the run these results came from -- a commit, a branch, a
@@ -131,6 +142,7 @@ runs:
         SEAL_REPORT_SOURCE: ${{ inputs.source }}
         SEAL_ARTIFACT_URL: ${{ inputs.artifact_url }}
         SEAL_RECORDINGS: ${{ inputs.recordings }}
+        SEAL_PROJECT_URL: ${{ inputs.project_url }}
       shell: bash
       run: |
         printf '%s' "$SEAL_RESULTS" > "$RUNNER_TEMP/seal-results.json"
@@ -141,6 +153,7 @@ runs:
           --title "$SEAL_REPORT_TITLE" \
           --source "$SEAL_REPORT_SOURCE" \
           --recordings "$RUNNER_TEMP/seal-recordings.json" \
+          --project-url "$SEAL_PROJECT_URL" \
           --artifact-url "$SEAL_ARTIFACT_URL"
 
     - name: Write it to this job's summary

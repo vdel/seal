@@ -11,6 +11,7 @@ what is checked is what an adopting project gets rather than what
 """
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -108,20 +109,30 @@ FAILING = "<testcase classname='api.tests' name='it_does_not'><failure message='
 
 
 def read(project: Path, capsys, *extra: str) -> dict:
-    """`seal _tests-results` against one run of this project."""
-    assert (
-        main(
-            [
-                "_tests-results",
-                "--run",
-                "dev={}".format(project / DEFAULT_RESULTS_DIR_NAME),
-                "--outcomes-dir",
-                str(project / "outcomes"),
-                *extra,
-            ]
+    """`seal _tests-results` against one run of this project.
+
+    From the project root, which is where a pipeline invokes it from: the
+    outcome tree is named relative to it, and so is the path each promise is
+    reported at.
+    """
+    previous = Path.cwd()
+    os.chdir(project)
+    try:
+        assert (
+            main(
+                [
+                    "_tests-results",
+                    "--run",
+                    "dev={}".format(project / DEFAULT_RESULTS_DIR_NAME),
+                    "--outcomes-dir",
+                    "outcomes",
+                    *extra,
+                ]
+            )
+            == 0
         )
-        == 0
-    )
+    finally:
+        os.chdir(previous)
     return json.loads(capsys.readouterr().out)["dev"]
 
 
@@ -877,7 +888,7 @@ def test_a_published_recording_is_linked_from_the_failure_it_belongs_to(tmp_path
         recordings={"dev/ui/todo-list/broken": "https://ci.invalid/artifacts/9001"},
     )
 
-    assert "▶ [watch this failure](https://ci.invalid/artifacts/9001)" in comment
+    assert "([▶see video](https://ci.invalid/artifacts/9001))" in comment
     # And the path to the same file drops out: naming it under a link
     # somebody was just offered in one click is noise.
     assert "video.webm" not in comment
@@ -898,7 +909,7 @@ def test_a_recording_is_never_shown_under_the_wrong_shapes_failure(tmp_path, cap
 
     # One link, under the shape it was recorded on; the other shape names the
     # path instead.
-    assert comment.count("watch this failure") == 1
+    assert comment.count("see video") == 1
     assert "non-dev/outcomes/ui/todo-list/broken" in comment
 
 
@@ -911,7 +922,7 @@ def test_a_comment_with_nothing_published_still_says_where_to_look(tmp_path, cap
 
     comment = reporting.render_markdown(runs, recordings={})
 
-    assert "watch this failure" not in comment
+    assert "see video" not in comment
     assert "video: `dev/outcomes/ui/todo-list/broken/artifacts/x/video.webm`" in comment
 
 
@@ -929,7 +940,7 @@ def test_a_kept_promises_recording_is_linked_where_one_was_published(tmp_path, c
     )
 
     assert "Watch the promises that held" in comment
-    assert "▶ [ui/todo-list/kept](https://ci.invalid/a/1)" in comment
+    assert "`ui/todo-list/kept`: ([▶see video](https://ci.invalid/a/1))" in comment
 
 
 def test_a_green_run_with_nothing_published_says_nothing_about_recordings(
@@ -962,7 +973,7 @@ def test_a_failures_recording_is_not_listed_again_under_the_ones_that_held(
         runs, recordings={"dev/ui/todo-list/broken": "https://ci.invalid/a/1"}
     )
 
-    assert "watch this failure" in comment
+    assert "see video" in comment
     assert "Watch the promises that held" not in comment
 
 
@@ -987,7 +998,7 @@ def test_a_recording_with_no_address_is_counted_rather_than_dropped(tmp_path, ca
         },
     )
 
-    assert comment.count("\u25b6 [") == 2
+    assert comment.count("see video") == 2
     assert "1 more recorded, with no address of their own" in comment
     # And it says where the one without an address actually is.
     assert "results artifact" in comment
@@ -1021,3 +1032,125 @@ def test_a_kept_promise_that_recorded_nothing_is_not_counted_as_missing(tmp_path
     )
 
     assert "more recorded" not in comment
+
+
+# --- where the promise itself is --------------------------------------------
+
+PROJECT_URL = "https://forge.invalid/acme/app/tree/abc1234/my-project"
+
+
+def test_the_reading_says_where_each_promise_lives(tmp_path, capsys):
+    """A slug is how the tree spells a promise; what a reader wants next is
+    what the application actually promised, which is the prompt sitting
+    beside the test translated from it. Reported relative to the project
+    root, so a path from the machine that ran the suite names nothing on a
+    forge and nothing in somebody else's checkout."""
+    tree(tmp_path)
+    promise(tmp_path, "kept", verdict=VERDICT_PASSED)
+
+    run = read(tmp_path, capsys)
+
+    assert [promise["path"] for promise in run["outcomes"]["promises"]] == [
+        "outcomes/ui/todo-list/kept"
+    ]
+
+
+def test_a_promises_name_is_a_link_to_the_promise(tmp_path, capsys):
+    """The comment's own line, as somebody reading a pull request sees it:
+    the promise, then what the run made of it, then the one click to the
+    video."""
+    tree(tmp_path)
+    promise(
+        tmp_path,
+        "a-deleted-item-stays-deleted",
+        headline="a deleted item stays deleted",
+        verdict=VERDICT_FAILED,
+        recorded=("artifacts/x/video.webm",),
+    )
+    runs = {"dev": read(tmp_path, capsys)}
+
+    comment = reporting.render_markdown(
+        runs,
+        recordings={
+            "dev/ui/todo-list/a-deleted-item-stays-deleted": "https://ci.invalid/a/1"
+        },
+        project_url=PROJECT_URL,
+    )
+
+    assert (
+        "- [ui/todo-list/a-deleted-item-stays-deleted]"
+        "({}/outcomes/ui/todo-list/a-deleted-item-stays-deleted) — {}"
+        ": a deleted item stays deleted"
+        " ([▶see video](https://ci.invalid/a/1))".format(PROJECT_URL, FAILED)
+    ) in comment
+
+
+def test_a_promise_that_held_is_linked_the_same_way(tmp_path, capsys):
+    """Whether a promise held decides what is said about it, not whether a
+    reader can get to it."""
+    tree(tmp_path)
+    promise(tmp_path, "kept", verdict=VERDICT_PASSED, recorded=("artifacts/x/video.webm",))
+    runs = {"dev": read(tmp_path, capsys)}
+
+    comment = reporting.render_markdown(
+        runs,
+        recordings={"dev/ui/todo-list/kept": "https://ci.invalid/a/1"},
+        project_url=PROJECT_URL,
+    )
+
+    assert (
+        "- [ui/todo-list/kept]({}/outcomes/ui/todo-list/kept): "
+        "([▶see video](https://ci.invalid/a/1))".format(PROJECT_URL)
+    ) in comment
+
+
+def test_the_page_links_the_promise_too(tmp_path, capsys):
+    """The page is read from an extracted artifact, so this is the one link
+    on it that reaches somewhere other than a file beside it."""
+    tree(tmp_path)
+    promise(tmp_path, "kept", verdict=VERDICT_PASSED)
+    runs = {"dev": read(tmp_path, capsys)}
+
+    page = reporting.render_html(runs, project_url=PROJECT_URL)
+
+    assert (
+        '<a href="{}/outcomes/ui/todo-list/kept">ui/todo-list/kept</a>'.format(PROJECT_URL)
+    ) in page
+
+
+def test_a_promise_is_named_where_nothing_says_where_the_project_is(tmp_path, capsys):
+    """Only the pipeline knows where a project is browsed, and a rendering
+    can be asked for outside one. A name is still what identifies the
+    promise; a link to nowhere would not be."""
+    tree(tmp_path)
+    promise(tmp_path, "broken", verdict=VERDICT_FAILED)
+    runs = {"dev": read(tmp_path, capsys)}
+
+    assert "`ui/todo-list/broken`" in reporting.render_markdown(runs)
+    assert "href" not in reporting.render_html(runs)
+
+
+def test_a_promise_nobody_can_place_is_named_rather_than_linked(tmp_path, capsys):
+    """A tree named by an absolute path is a tree whose project root nothing
+    can work out, so the reading says nothing about where its promises are
+    -- and a renderer given a project URL still has to name them."""
+    tree(tmp_path)
+    promise(tmp_path, "broken", verdict=VERDICT_FAILED)
+    assert (
+        main(
+            [
+                "_tests-results",
+                "--run",
+                "dev={}".format(tmp_path / DEFAULT_RESULTS_DIR_NAME),
+                "--outcomes-dir",
+                str(tmp_path / "outcomes"),
+            ]
+        )
+        == 0
+    )
+    runs = json.loads(capsys.readouterr().out)
+
+    assert runs["dev"]["outcomes"]["promises"][0]["path"] == ""
+    assert "`ui/todo-list/broken`" in reporting.render_markdown(
+        runs, project_url=PROJECT_URL
+    )

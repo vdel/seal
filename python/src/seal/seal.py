@@ -573,6 +573,15 @@ def _rendered_outcomes(
             {
                 "slug": result.outcome.slug,
                 "headline": result.outcome.headline,
+                # Where the promise itself lives, relative to the project
+                # root: the prompt, and whatever has been translated from
+                # it. What a reader of a report asks next about a promise
+                # they don't recognise is what it actually says, and a
+                # renderer given somewhere this project is browsed can turn
+                # this into a link to it. Reported rather than derived from
+                # the slug downstream, because how the tree spells a promise
+                # is the tree's own business.
+                "path": _rendered_promise_path(result.outcome.directory),
                 "state": result.state,
                 "quarantined": result.outcome.quarantined,
                 "failed": [
@@ -594,6 +603,23 @@ def _rendered_outcomes(
             for result in results
         ],
     }
+
+
+def _rendered_promise_path(directory: Path) -> str:
+    """One promise's own directory, as a path a reader can resolve.
+
+    Relative to the project root, which is where this command is invoked
+    from -- an absolute path from the machine that ran the suite names
+    nothing on a forge, and nothing in a checkout somebody else made.
+    Empty where it cannot be said, which is a renderer's cue to name the
+    promise without linking it.
+    """
+    if not directory.is_absolute():
+        return directory.as_posix()
+    try:
+        return directory.relative_to(Path.cwd()).as_posix()
+    except ValueError:
+        return ""
 
 
 def _rendered_evidence(results_root: Path, result: OutcomeResult) -> dict:
@@ -739,6 +765,18 @@ def cmd_report(args: list[str]) -> int:
             "names a run in whatever performed it."
         ),
     )
+    parser.add_argument(
+        "--project-url",
+        default="",
+        help=(
+            "where this project's own files are browsed, at the revision "
+            "these results are about. Each promise's name is linked to the "
+            "promise itself under it -- the prompt, and the test translated "
+            "from it -- which is what a reader asks for next about a promise "
+            "they do not recognise. Omitted, the promises are named and not "
+            "linked."
+        ),
+    )
     parsed = parser.parse_args(args)
 
     if not parsed.html and not parsed.markdown and not parsed.recordings_list:
@@ -781,7 +819,12 @@ def cmd_report(args: list[str]) -> int:
 
     if parsed.html:
         Path(parsed.html).write_text(
-            reporting.render_html(runs, title=parsed.title, source=parsed.source),
+            reporting.render_html(
+                runs,
+                title=parsed.title,
+                source=parsed.source,
+                project_url=parsed.project_url,
+            ),
             encoding="utf-8",
         )
     if parsed.markdown:
@@ -790,7 +833,8 @@ def cmd_report(args: list[str]) -> int:
                 runs,
                 title=parsed.title,
                 recordings=recordings,
-                artifact_url=parsed.artifact_url
+                artifact_url=parsed.artifact_url,
+                project_url=parsed.project_url,
             ),
             encoding="utf-8",
         )

@@ -275,6 +275,13 @@ outputs:
       failure". Empty where nothing broke, or where publishing them was
       turned off.
     value: ${{ steps.recordings.outputs.published }}
+  project_url:
+    description: >
+      Where this project's own files are browsed, at the revision these
+      results are about. What lets a report link each promise to the promise
+      itself -- the prompt it was written from, beside the test translated
+      from it -- rather than naming a slug a reader has to go looking for.
+    value: ${{ steps.project.outputs.url }}
   results_artifact_url:
     description: >
       Where that artifact can be downloaded. A file inside it has no address
@@ -803,6 +810,37 @@ runs:
         mkdir -p "$RUNNER_TEMP/seal-results"
         printf '%s\n' "$results" > "$RUNNER_TEMP/seal-results/results.json"
 
+    - name: Say where this project is browsed
+      id: project
+      # Composed here because every part of it is a fact about the pipeline:
+      # which forge, which repository, which revision, and where in it the
+      # project the run was pointed at lives. The CLI is handed the result
+      # and appends the path each promise reported, so nothing downstream
+      # has to know how a forge spells a link to a directory.
+      if: (!cancelled())
+      env:
+        SEAL_PROJECT_DIR: ${{ inputs.project_dir }}
+        # Where files are browsed, which is not where the API lives, and is
+        # not github.com on an enterprise instance.
+        SEAL_SERVER_URL: ${{ github.server_url }}
+        # The pull request's head rather than `github.sha`, which on a
+        # pull_request event is the merge commit GitHub made to test with --
+        # a revision that appears nowhere in the branch, and so links a
+        # reviewer to a tree they cannot find again. `github.sha` is the
+        # fallback for an event that carries no pull request head.
+        SEAL_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      shell: bash
+      run: |
+        url="$SEAL_SERVER_URL/$GITHUB_REPOSITORY/tree/$SEAL_COMMIT_SHA"
+        # A project at the repository root is addressed by the revision
+        # alone: a trailing '.' or '/' is a path a forge has no page for.
+        path="${SEAL_PROJECT_DIR#./}"
+        path="${path%/}"
+        if [ -n "$path" ] && [ "$path" != "." ]; then
+          url="$url/$path"
+        fi
+        echo "url=$url" >> "$GITHUB_OUTPUT"
+
     - name: Render what each run found
       # A page, in the artifact this run already uploads. It publishes
       # nothing and needs no scope: what it adds is that the results a
@@ -819,6 +857,8 @@ runs:
       # is one reader of a report, and everything downstream renders what it
       # said.
       if: (!cancelled())
+      env:
+        SEAL_PROJECT_URL: ${{ steps.project.outputs.url }}
       shell: bash
       run: |
         if [ ! -f "$RUNNER_TEMP/seal-results/results.json" ]; then
@@ -833,6 +873,7 @@ runs:
           --html "$RUNNER_TEMP/seal-results/index.html" \
           --markdown "$RUNNER_TEMP/seal-results/report.md" \
           --recordings-list "$RUNNER_TEMP/seal-recordings.json" \
+          --project-url "$SEAL_PROJECT_URL" \
           --source "${{ github.repository }}@${{ github.sha }}"
 
     - name: Stage each broken promise's recording

@@ -491,6 +491,39 @@ def test_the_artifact_carries_a_report_a_person_can_read():
     )
 
 
+def test_where_the_project_is_browsed_is_worked_out_and_handed_back():
+    """Each promise's name is a link to the promise itself -- the prompt, and
+    the test translated from it -- and a slug on its own tells a reviewer who
+    has never opened the tree nothing. Composed here because every part of it
+    is a fact about the pipeline, and handed back as an output because the
+    job that comments is a different one.
+
+    The pull request's head, not `github.sha`: on a pull_request event that
+    is the merge commit GitHub made to test with, and a tree under it is one
+    a reviewer cannot find again.
+    """
+    project = next(step for step in _steps() if step.get("id") == "project")
+    render = next(
+        step for step in _steps() if step["name"] == "Render what each run found"
+    )
+
+    assert project["env"]["SEAL_PROJECT_DIR"] == "${{ inputs.project_dir }}"
+    assert project["env"]["SEAL_SERVER_URL"] == "${{ github.server_url }}"
+    assert (
+        project["env"]["SEAL_COMMIT_SHA"]
+        == "${{ github.event.pull_request.head.sha || github.sha }}"
+    )
+    assert "$GITHUB_REPOSITORY" in project["run"]
+    assert _steps().index(project) < _steps().index(render)
+
+    assert render["env"]["SEAL_PROJECT_URL"] == "${{ steps.project.outputs.url }}"
+    assert "--project-url" in render["run"]
+    assert (
+        _workflow()["outputs"]["project_url"]["value"]
+        == "${{ steps.project.outputs.url }}"
+    )
+
+
 def test_a_run_that_did_not_read_the_promises_says_so_rather_than_reporting_none_kept():
     """With `run_outcomes` off, every promise has no verdict -- which from the
     results alone is exactly what a suite whose tests all failed to write one
@@ -667,7 +700,13 @@ def test_the_worked_example_does_something_with_everything_it_is_handed():
     body = str(consumers)
 
     assert consumers, "nothing in the example reads what the workflow hands back"
-    for output in ("overlays", "results", "results_artifact", "results_artifact_url"):
+    for output in (
+        "overlays",
+        "results",
+        "results_artifact",
+        "results_artifact_url",
+        "project_url",
+    ):
         assert "needs.tests.outputs.{}".format(output) in body, output
 
     # And each of them reports on a run that went red, which is the run whose
