@@ -116,6 +116,9 @@ jobs:
       overlays: ${{ steps.seal.outputs.overlays }}
       results: ${{ steps.seal.outputs.results }}
       results_artifact: ${{ steps.seal.outputs.results_artifact }}
+      results_artifact_url: ${{ steps.seal.outputs.results_artifact_url }}
+      recordings: ${{ steps.seal.outputs.recordings }}
+      project_url: ${{ steps.seal.outputs.project_url }}
     steps:
       - uses: actions/checkout@v6
 
@@ -159,26 +162,46 @@ enumerates them and never goes stale against them.
 | `credentials_env` | Which of the project's credentials environments the run reads -- which store each `.env` reference resolves against. Reaches `seal ci` as `SEAL_CREDENTIALS_ENV`. Left empty, the project's own `default_env` applies. Independent of `k8s_overlay` by design. |
 | `results_artifact` | Name of the artifact the run uploads its results to; defaults to `tests-results`. A name has to be unique within a workflow run, so a repository using this action more than once names each use. |
 | `results_retention_days` | How long that artifact is kept; defaults to 7. It exists for the caller's own reporting job to read in the same run. |
+| `record_outcome_video_on_failure` | Whether a promise this run does not see kept keeps a video of what the browser did -- `true` or `false`, `true` by default. Reaches the runner's generated config through `seal ci`. |
+| `record_outcome_video_on_success` | Whether a promise that held keeps one too -- `true` or `false`, `false` by default. For checking that a suite exercises what somebody thinks it does. On while `record_outcome_video_on_failure` is off is refused: that records a pass and throws away the failure. |
+| `publish_recordings` | Whether each recording also gets an artifact of its own, so a report can link it rather than the archive holding it -- `true` or `false`, `true` by default. |
 
 ### What comes back
 
 The action publishes nothing -- no check, no comment, no status, not even a
 job summary. Which of those a project's results become is that project's own
 policy, along with whichever action implements it and the write scopes that
-action needs on their pull requests. So it hands back three outputs and
-stops:
+action needs on their pull requests. So it hands back what every run found
+and stops:
 
 | Output | What it carries |
 | --- | --- |
 | `overlays` | The overlays this run verified, as a JSON list. Empty when the run died before it could say which shapes it was going to run, and `fromJSON('')` fails the job reading it -- so a caller guards on that. |
 | `results` | What every run found, as one line of JSON keyed by overlay: `passed`, `cases`, `skipped`, `failed`, `problems`, one `sources` entry per service whose own tests came back, and an `outcomes` block holding every promise the tree declares. Read by the same two modules the gate's own verdicts came from, so it cannot disagree with the run. Failed test names are capped per source, with `failed_omitted` saying how many were left out; the failed count never is, and no promise is ever left out. |
 | `results_artifact` | Name of the artifact holding the reports themselves, the reading as `results.json`, and a self-contained `index.html` page of both. Each service's own report is at `<overlay>/<service>/junit.xml` and each promise's directory at `<overlay>/outcomes/<group>/<epic>/<outcome>/`. Nothing is uploaded when a run produced no results, so a download step guards against a missing artifact. |
+| `results_artifact_url` | Where that artifact can be downloaded -- what a comment links for everything not published on its own. Empty when nothing was uploaded. |
+| `recordings` | Where each broken promise's recording was published, as JSON keyed by `<overlay>/<slug>`. `{}` on a green run. |
+| `project_url` | Where the project's own files are browsed at the revision under test. What lets a report link a promise's name to the promise itself -- its prompt, beside the test translated from it -- instead of naming a slug a reviewer has to go looking for. |
 
 Each promise in `outcomes.promises` carries its `slug`, its prompt's
 `headline`, whether it is `quarantined`, and one of four states: `PASS`,
 `FAIL`, `no verdict` (it has a test and nothing knows whether it ran -- a
 failure), or `no test yet` (nothing translated from it -- not a failure).
 `outcomes.counts` counts them by state.
+
+A promise that did **not** hold also carries `evidence`: what it left behind
+to look at, each `path` relative to that run's results and so a path inside
+the artifact. `kind` is `video`, `image`, `trace`, `page` or `log`. The
+`playwright` runner records a video and a screenshot on failure, so a red
+promise has one and a green one has nothing to show. The rendered
+`index.html` plays them where they sit.
+
+A file inside a CI artifact has no address of its own, so each promise's
+recording is *also* uploaded as an unarchived artifact of its own, named
+after the promise -- broken promises first, twenty per run at most, since the
+uploads are unrolled. `actions/ci`'s `recordings` output says where each went, and the
+`report` action turns that into a "watch this failure" link per promise.
+`publish_recordings: false` skips those uploads and keeps the page.
 
 `outcomes.read` is `false` where the run was asked not to read them
 (`run_outcomes: false`): `promises` is empty and nothing in the results is a
@@ -202,6 +225,11 @@ on the pull request, use Seal's own `report` action from a job of its own:
       - uses: vdel/seal/actions/report@v0.3
         with:
           results: ${{ needs.tests.outputs.results }}
+          # So a broken promise's line links straight to a video of it.
+          recordings: ${{ needs.tests.outputs.recordings }}
+          artifact_url: ${{ needs.tests.outputs.results_artifact_url }}
+          # So each promise's name links to what it promises.
+          project_url: ${{ needs.tests.outputs.project_url }}
           # Which comment a run replaces, so two projects gated in one
           # workflow keep a report each. Defaults to `default`.
           comment_key: my-project

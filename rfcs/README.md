@@ -38,7 +38,7 @@ than a missing RFC.
 | [0012](0012-translation-and-review.md) | Translation and review | Why a translation needs a human, and what Seal does around it |
 | [0013](0013-regression-loop.md) | The regression loop | How a red suite gets back to green without anybody editing a test |
 | [0014](0014-seal-on-seal.md) | Seal homologates itself | What Seal promises, and the runner those promises need |
-| [0015](0015-reporting-what-a-run-found.md) | Reporting what a run found | Who reads a verdict, who renders it, and who publishes it |
+| [0015](0015-reporting-what-a-run-found.md) | Reporting what a run found | Who reads a verdict, who renders it, who publishes it, and what a failure leaves to watch |
 
 ## Reading order
 

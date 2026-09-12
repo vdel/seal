@@ -68,6 +68,40 @@ inputs:
       permissions at all.
     required: false
     default: 'true'
+  recordings:
+    description: >
+      Where each broken promise's recording was published, as the JSON
+      `actions/ci` hands back in its `recordings` output.
+
+      This is what lets the comment say "watch this failure" with a link
+      that reaches the recording itself. Empty -- a green run, or a project
+      that turned publishing them off -- leaves the paths named and the
+      archive linked, which still gets somebody there.
+    required: false
+    default: '{}'
+  artifact_url:
+    description: >
+      Where the files this rendering names can be downloaded -- the
+      `results_artifact_url` output of `actions/ci`.
+
+      A file inside a CI artifact has no address of its own: the artifact is
+      one archive, fetched whole. So a comment names the recording's path
+      and links the archive, and the page inside that archive is what opens
+      it. Empty leaves the paths named and unlinked, which is still what
+      somebody needs to find them.
+    required: false
+    default: ''
+  project_url:
+    description: >
+      Where this project's own files are browsed at the revision these
+      results are about -- the `project_url` output of `actions/ci`.
+
+      What lets each promise's name be a link to the promise itself: the
+      prompt it was written from, beside the test translated from it. A slug
+      is how the tree spells a promise and tells a reviewer who has never
+      opened it nothing. Empty names the promises without linking them.
+    required: false
+    default: ''
   source:
     description: >
       What names the run these results came from -- a commit, a branch, a
@@ -106,14 +140,21 @@ runs:
         SEAL_RESULTS: ${{ inputs.results }}
         SEAL_REPORT_TITLE: ${{ inputs.title }}
         SEAL_REPORT_SOURCE: ${{ inputs.source }}
+        SEAL_ARTIFACT_URL: ${{ inputs.artifact_url }}
+        SEAL_RECORDINGS: ${{ inputs.recordings }}
+        SEAL_PROJECT_URL: ${{ inputs.project_url }}
       shell: bash
       run: |
         printf '%s' "$SEAL_RESULTS" > "$RUNNER_TEMP/seal-results.json"
+        printf '%s' "${SEAL_RECORDINGS:-{\}}" > "$RUNNER_TEMP/seal-recordings.json"
         uvx --from ${{ github.action_path }}/../../python seal _report \
           --results "$RUNNER_TEMP/seal-results.json" \
           --markdown "$RUNNER_TEMP/seal-report.md" \
           --title "$SEAL_REPORT_TITLE" \
-          --source "$SEAL_REPORT_SOURCE"
+          --source "$SEAL_REPORT_SOURCE" \
+          --recordings "$RUNNER_TEMP/seal-recordings.json" \
+          --project-url "$SEAL_PROJECT_URL" \
+          --artifact-url "$SEAL_ARTIFACT_URL"
 
     - name: Write it to this job's summary
       # Compared against the string, never read for truthiness: every input

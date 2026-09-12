@@ -13,10 +13,11 @@ to build here, and no cluster needed.
 What this reading checked, and what it left alone:
 
 - **Every step that decides a promise invokes `seal ci` exactly once**,
-  with flags drawn only from the set `tilt`'s own config declares
-  (`--k8s_overlay`, `--build_type`, `--publish_images`, `--run_outcomes`) --
-  the same flags examples/angular-django's own local `seal ci` command
-  takes. A step matching this is doing nothing a person typing the command
+  with flags drawn only from the set `tilt`'s own config declares -- read
+  off the Starlark that declares them, so the set is whatever the extension
+  currently accepts rather than whatever it accepted when this was written.
+  Those are the same flags a project's own local `seal ci` command takes, so
+  a step matching this is doing nothing a person typing the command
   themselves would not also do.
 - **The step's own exit status is that command's own.** The two runs that
   loop over more than one overlay capture it explicitly (`|| status=$?`,
@@ -57,11 +58,28 @@ GATE_PATH = REPO_ROOT / "actions" / "ci" / "action.yml"
 STEP_HEADER = re.compile(r"^    - name: (.+)$", re.MULTILINE)
 RUN_BODY = re.compile(r"^      run: \|\n((?:(?:[ ]{8,}.*)?\n)*)", re.MULTILINE)
 
-# Every flag `tilt`'s own config declares for a run (tilt/seal/config.Tiltfile)
-# -- the whole vocabulary a person typing `seal ci` themselves has
-# available. A step forwarding only these is forwarding exactly what the CLI
-# itself accepts, nothing invented for CI's sake.
-ALLOWED_FLAGS = {"--k8s_overlay", "--build_type", "--publish_images", "--run_outcomes"}
+CONFIG_TILTFILE = REPO_ROOT / "tilt" / "seal" / "config.Tiltfile"
+
+# Every flag `tilt`'s own config declares for a run -- the whole vocabulary a
+# person typing `seal ci` themselves has available. A step forwarding only
+# these is forwarding exactly what the CLI itself accepts, nothing invented
+# for CI's sake.
+#
+# Read off the Starlark that declares them rather than listed here. A list
+# written in this file would say what the vocabulary was when somebody last
+# looked: the promise is that the gate types what a person can type, so the
+# set has to be whatever the extension currently accepts. Restating it turns
+# every new flag into this check failing for a gate that is still keeping the
+# promise.
+DECLARED_FLAG = re.compile(
+    r"config\.define_(?:string|bool|string_list)\('([^']+)'\)"
+)
+
+
+def allowed_flags() -> set[str]:
+    declared = DECLARED_FLAG.findall(CONFIG_TILTFILE.read_text(encoding="utf-8"))
+    expect(declared, f"{CONFIG_TILTFILE} declares the flags a run can be given")
+    return {"--" + flag for flag in declared}
 
 # What a step rolling its own JUnit reader would leave lying around in its
 # own script, instead of going back through `seal _tests-results`.
@@ -135,11 +153,12 @@ def expect_is_the_command_itself(name: str, body: str, subcommand_flags: set[str
         f"way a person's own command line would: {invocation!r}",
     )
     flags = _flags_after_separator(invocation)
-    unknown = [flag for flag in flags if flag not in ALLOWED_FLAGS]
+    allowed = allowed_flags()
+    unknown = [flag for flag in flags if flag not in allowed]
     expect(
         not unknown,
         f"'{name}' passes only flags `seal ci` itself understands "
-        f"({sorted(ALLOWED_FLAGS)}) -- found {unknown} in {invocation!r}",
+        f"({sorted(allowed)}) -- found {unknown} in {invocation!r}",
     )
     expect(
         subcommand_flags <= set(flags),

@@ -34,6 +34,18 @@ config.define_bool('publish_images')
 # passed and so cannot tell "follow the run" from "definitely not".
 config.define_string('run_outcomes')
 
+# Whether an outcome's run is recorded, stated separately for the two things
+# a recording can be about. A failure's recording is what a red promise costs
+# somebody: an assertion that timed out waiting for a selector reads the same
+# whether the page never loaded, loaded the wrong thing, or loaded the right
+# thing behind a dialog. A passing run's is for checking the suite is
+# exercising what somebody thinks it is.
+#
+# Strings rather than define_bool, for the reason run_outcomes is: a flag
+# nobody passed reports False, which cannot be told from one passed as false.
+config.define_string('record_outcome_video_on_failure')
+config.define_string('record_outcome_video_on_success')
+
 config.define_string_list('allowed_k8s_contexts')  # Used to restrict allowed Kubernetes contexts when deploying with Tilt.
 cfg = config.parse()
 
@@ -74,6 +86,58 @@ if _run_outcomes != '' and _run_outcomes not in RUN_OUTCOMES_VALUES:
 run_outcomes = (
     RUN_OUTCOMES_VALUES[_run_outcomes] if _run_outcomes != ''
     else os.getenv(SEAL_CI_ENV_VAR, '') != ''
+)
+
+# What the two recording flags add up to, in the vocabulary the runner that
+# implements them speaks. Only the `playwright` runner records anything; a
+# `tap` or `custom` runner writes whatever it writes and this says nothing
+# about it.
+#
+# Unset is a failure's recording and nothing else: a red promise is what
+# somebody has to understand, and a green suite that kept a video per test
+# would fill every artifact with footage of things working.
+BOOLEAN_VALUES = {'true': True, 'false': False}
+
+OUTCOME_VIDEO_OFF = 'off'
+OUTCOME_VIDEO_ALWAYS = 'on'
+OUTCOME_VIDEO_ON_FAILURE = 'retain-on-failure'
+
+
+def _recording_switch(name, unset):
+    value = cfg.get(name, '')
+    if value == '':
+        return unset
+    if value not in BOOLEAN_VALUES:
+        fail(
+            "Invalid {} '{}'. Must be {}.".format(
+                name, value, ' or '.join(sorted(BOOLEAN_VALUES)),
+            )
+        )
+    return BOOLEAN_VALUES[value]
+
+
+_video_on_failure = _recording_switch('record_outcome_video_on_failure', True)
+_video_on_success = _recording_switch('record_outcome_video_on_success', False)
+
+if _video_on_success and not _video_on_failure:
+    # Nothing records a pass and discards a failure: a run is recorded or it
+    # is not, and what the recording is kept for is decided afterwards. So
+    # this combination is refused rather than quietly rounded up to keeping
+    # both -- a project that asked to keep only the passes would otherwise
+    # get every failure's video as well and never be told.
+    # Starlark has no adjacent-string-literal concatenation, so a message
+    # spanning lines joins with `+`.
+    fail(
+        "record_outcome_video_on_success without record_outcome_video_on_failure "
+        + "asks to record a run and throw the recording away exactly when it is "
+        + "worth having. Keeping the passes means keeping the failures too: "
+        + "turn record_outcome_video_on_failure on as well, or record neither."
+    )
+
+outcome_video = (
+    OUTCOME_VIDEO_ALWAYS if _video_on_success and _video_on_failure
+    else OUTCOME_VIDEO_ON_FAILURE if _video_on_failure
+    else OUTCOME_VIDEO_OFF
 )
 
 # Allow production contexts

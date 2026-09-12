@@ -86,6 +86,14 @@ named-subset run as the suite.
 Reports land in `tests-results/outcomes/<group>/<epic>/<outcome>/`, beside
 each service's own results in `tests-results/<service_name>/`.
 
+A promise that failed under the `playwright` runner leaves a video of the
+browser and a screenshot in there too. A promise that held leaves neither
+unless the project asked for it (`--record_outcome_video_on_success`).
+Watch the video before reading the test: an
+assertion that timed out waiting for a selector says the same thing whether
+the page never loaded, loaded the wrong thing, or loaded the right thing
+behind a dialog.
+
 ## Work on one service outside the cluster
 
 `seal run` injects that service's own `.env` into one command. Run it

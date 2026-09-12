@@ -22,6 +22,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from seal.seal import MAX_PUBLISHED_RECORDINGS
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTION = REPO_ROOT / "actions" / "ci" / "action.yml"
 CALLER = REPO_ROOT / ".github" / "workflows" / "internal-example.yml"
@@ -81,6 +83,22 @@ def _invocations_in(script: str) -> list[list[str]]:
 
 def _seal_ci_invocations() -> list[list[str]]:
     return [i for script in _run_scripts() for i in _invocations_in(script)]
+
+
+def _results_upload() -> dict:
+    """The step that uploads the results artifact -- reached by its id, since
+    the recording uploads below are the same action."""
+    return next(step for step in _steps() if step.get("id") == "upload")
+
+
+def _recording_uploads() -> list[dict]:
+    """Every step that publishes one recording on its own."""
+    return [
+        step
+        for step in _steps()
+        if str(step.get("id", "")).startswith("recording")
+        and step.get("uses", "").startswith("actions/upload-artifact")
+    ]
 
 
 def _gate_step() -> dict:
@@ -473,6 +491,39 @@ def test_the_artifact_carries_a_report_a_person_can_read():
     )
 
 
+def test_where_the_project_is_browsed_is_worked_out_and_handed_back():
+    """Each promise's name is a link to the promise itself -- the prompt, and
+    the test translated from it -- and a slug on its own tells a reviewer who
+    has never opened the tree nothing. Composed here because every part of it
+    is a fact about the pipeline, and handed back as an output because the
+    job that comments is a different one.
+
+    The pull request's head, not `github.sha`: on a pull_request event that
+    is the merge commit GitHub made to test with, and a tree under it is one
+    a reviewer cannot find again.
+    """
+    project = next(step for step in _steps() if step.get("id") == "project")
+    render = next(
+        step for step in _steps() if step["name"] == "Render what each run found"
+    )
+
+    assert project["env"]["SEAL_PROJECT_DIR"] == "${{ inputs.project_dir }}"
+    assert project["env"]["SEAL_SERVER_URL"] == "${{ github.server_url }}"
+    assert (
+        project["env"]["SEAL_COMMIT_SHA"]
+        == "${{ github.event.pull_request.head.sha || github.sha }}"
+    )
+    assert "$GITHUB_REPOSITORY" in project["run"]
+    assert _steps().index(project) < _steps().index(render)
+
+    assert render["env"]["SEAL_PROJECT_URL"] == "${{ steps.project.outputs.url }}"
+    assert "--project-url" in render["run"]
+    assert (
+        _workflow()["outputs"]["project_url"]["value"]
+        == "${{ steps.project.outputs.url }}"
+    )
+
+
 def test_a_run_that_did_not_read_the_promises_says_so_rather_than_reporting_none_kept():
     """With `run_outcomes` off, every promise has no verdict -- which from the
     results alone is exactly what a suite whose tests all failed to write one
@@ -500,14 +551,144 @@ def test_the_reading_travels_with_the_reports_as_well_as_out_as_an_output():
     assert "$RUNNER_TEMP/seal-results/results.json" in collect["run"]
 
 
+def test_a_recording_is_published_under_an_address_of_its_own():
+    """The point of the whole arrangement: a file inside an artifact has no
+    address, so a link to one is a download to go looking through. Uploaded
+    unarchived, a recording gets a URL that reaches the recording."""
+    uploads = _recording_uploads()
+
+    assert uploads, "nothing publishes a recording on its own"
+    for step in uploads:
+        assert step["with"]["archive"] is False, (
+            "zipped, the URL reaches an archive rather than the video in it"
+        )
+        # A re-run publishes the same names again, and an artifact name has
+        # to be unique within a run.
+        assert step["with"]["overwrite"] is True
+
+
+def test_as_many_addresses_as_the_cli_says_it_will_name():
+    """A composite action cannot loop a `uses:` step, and how many promises
+    broke is not known until the run has finished -- so the uploads are
+    unrolled and their number is fixed. Fixed in two files, which is exactly
+    the kind of agreement that goes quietly wrong: one more upload step than
+    the CLI names is a step that never runs, and one fewer is a recording
+    published nowhere with nothing saying so."""
+    assert len(_recording_uploads()) == MAX_PUBLISHED_RECORDINGS
+
+
+def test_every_published_recording_is_reachable_from_the_promise_that_broke():
+    """The uploads each know their own URL and nothing else. Something has to
+    turn them into one thing a report can look a promise up in -- keyed by
+    run and slug, since two shapes can break the same promise."""
+    collect = next(step for step in _steps() if step.get("id") == "recordings")
+
+    for index in range(1, MAX_PUBLISHED_RECORDINGS + 1):
+        assert "steps.stage.outputs.key{}".format(index) in collect["env"]["SEAL_RECORDINGS"]
+        assert (
+            "steps.recording{}.outputs.artifact-url".format(index)
+            in collect["env"]["SEAL_RECORDINGS"]
+        )
+
+    outputs = _workflow()["outputs"]
+    assert outputs["recordings"]["value"] == "${{ steps.recordings.outputs.published }}"
+
+
+@pytest.mark.parametrize("when", ["failure", "success"])
+def test_a_project_says_which_runs_are_recorded(inputs, when):
+    """Two switches rather than one, because they answer different questions:
+    a failure's recording is what somebody needs to understand a red promise,
+    and a passing run's is for checking the suite exercises what somebody
+    thinks it does."""
+    name = "record_outcome_video_on_{}".format(when)
+
+    assert inputs[name]["required"] is False
+    # No `type:`: an action's inputs are strings, and the extension compares
+    # this against the two words it takes rather than reading it for
+    # truthiness.
+    assert "type" not in inputs[name]
+
+
+def test_a_failure_is_recorded_by_default_and_a_pass_is_not(inputs):
+    """What a project gets without saying anything, and the same answer the
+    extension gives a run that passes neither flag (tilt/seal/config.Tiltfile).
+
+    A red promise is what somebody has to understand, and an assertion that
+    timed out waiting for a selector reads the same whether the page never
+    loaded or loaded the right thing behind a dialog -- so a failure is
+    recorded. A green run's footage is things working: it costs a video per
+    promise on every run and nobody watches it, so recording the passes is
+    asked for rather than given.
+    """
+    assert inputs["record_outcome_video_on_failure"]["default"] == "true"
+    assert inputs["record_outcome_video_on_success"]["default"] == "false"
+
+
+def test_the_recording_switches_reach_every_run_that_reads_a_promise():
+    """Passed through to the extension rather than acted on here: what the
+    pair means is one answer, and it lives beside the config that generates
+    the runner (tilt/seal/config.Tiltfile). A run that reads no promise
+    records nothing whatever they say."""
+    gates = [
+        step
+        for step in _steps()
+        if SEAL_CI in str(step.get("run", ""))
+        and "publish_images" not in str(step.get("run", ""))
+    ]
+
+    assert gates, "no gate run to record"
+    for step in gates:
+        for when in ("failure", "success"):
+            flag = "--record_outcome_video_on_{}".format(when)
+            assert flag in step["run"], step["name"]
+            assert step["env"]["VIDEO_ON_{}".format(when.upper())] == (
+                "${{{{ inputs.record_outcome_video_on_{} }}}}".format(when)
+            )
+
+
+def test_publishing_recordings_can_be_turned_off():
+    """It costs an upload per broken promise and sends the recording's bytes
+    twice, since it stays in the results artifact where the page that plays
+    it lives. A project that would rather not pay that keeps the page."""
+    inputs = _action_inputs()
+
+    assert inputs["publish_recordings"]["required"] is False
+    assert inputs["publish_recordings"]["default"] == "true"
+    stage = next(step for step in _steps() if step.get("id") == "stage")
+    assert "inputs.publish_recordings == 'true'" in stage["if"]
+
+
+def test_which_files_are_recordings_is_the_clis_to_say():
+    """A `find` by extension in the workflow would be a second answer to a
+    classification that lives beside the verdict it belongs to. The staging
+    step copies what the CLI listed, and nothing else."""
+    stage = next(step for step in _steps() if step.get("id") == "stage")
+    render = next(step for step in _steps() if step["name"] == "Render what each run found")
+
+    assert "--recordings-list" in render["run"]
+    assert "seal-recordings.json" in stage["run"]
+    assert ".webm" not in stage["run"] and "find " not in stage["run"]
+
+
+def test_where_the_recordings_can_be_fetched_is_handed_back_too():
+    """A file inside a CI artifact has no address of its own -- the artifact
+    is one archive, fetched whole -- so this is as close as a report
+    published outside the run can get to the recording of a failure. Read off
+    the upload step rather than built from a run id, because only the upload
+    knows which artifact it created."""
+    outputs = _workflow()["outputs"]
+    upload = _results_upload()
+
+    assert upload["uses"].startswith("actions/upload-artifact")
+    assert outputs["results_artifact_url"]["value"] == "${{ steps.upload.outputs.artifact-url }}"
+
+
 def test_the_reports_themselves_survive_the_run_that_produced_them():
     """The `results` output carries what the reports say, not the reports:
     it is a string with a size limit, and the coverage sitting beside them
     isn't JUnit at all. A caller wanting either downloads the artifact, so
     the workflow has to name it back."""
-    upload = next(
-        step for step in _steps() if step.get("uses", "").startswith("actions/upload-artifact")
-    )
+    upload = _results_upload()
     inputs = _action_inputs()
 
     assert upload["with"]["name"] == "${{ inputs.results_artifact }}"
@@ -534,7 +715,13 @@ def test_the_worked_example_does_something_with_everything_it_is_handed():
     body = str(consumers)
 
     assert consumers, "nothing in the example reads what the workflow hands back"
-    for output in ("overlays", "results", "results_artifact"):
+    for output in (
+        "overlays",
+        "results",
+        "results_artifact",
+        "results_artifact_url",
+        "project_url",
+    ):
         assert "needs.tests.outputs.{}".format(output) in body, output
 
     # And each of them reports on a run that went red, which is the run whose

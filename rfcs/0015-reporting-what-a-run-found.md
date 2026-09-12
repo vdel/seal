@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | **Status** | Accepted |
-| **Related** | [0001](0001-library-boundary.md), [0009](0009-outcome-tests.md), [0010](0010-outcome-tree.md), [0011](0011-outcome-runners.md) |
+| **Related** | [0001](0001-library-boundary.md), [0009](0009-outcome-tests.md), [0010](0010-outcome-tree.md), [0011](0011-outcome-runners.md), [0013](0013-regression-loop.md) |
 | **How-to** | [Continuous integration](../docs/guides/continuous-integration.md) |
 
 ## Context
@@ -54,11 +54,24 @@ genuinely is theirs to choose.
 - One reader per kind of result, and it is the one whose answer the gate
   used: `junit.py` for a service's own tests, `outcome_suite.py` for a
   promise. `seal _tests-results` reads through both and hands back what they
-  say -- now including a line per promise, by slug and by headline, in
-  whichever of the four states it is in.
+  say -- a line per promise, by slug and by headline, in whichever of the
+  four states it is in, and where in the project the promise itself lives.
+- A promise's name is a link to the promise. A slug is how the tree spells
+  it and says nothing to a reviewer who has never opened the tree; what they
+  want next is what the application actually promised, which is the prompt
+  sitting beside the test translated from it. The reading says where each
+  promise is relative to the project root, and the pipeline says where the
+  project is browsed (`actions/ci`'s `project_url`) -- so the renderer joins
+  two facts and neither side has to know the other's.
 - One renderer, downstream of that reading and of nothing else:
   `seal _report` writes a self-contained HTML page and a Markdown summary
   from the reading's own output.
+- A promise that failed is reported with what it left behind to look at --
+  for the `playwright` runner, a video of the browser and a screenshot,
+  recorded on failure only. The page plays them, because it sits in the same
+  archive. And because a file inside a CI artifact has no address of its
+  own, each broken promise's recording is *also* uploaded as an unarchived
+  artifact of its own, so the comment can link one per failure.
 - `actions/ci` renders the page into the results artifact it already
   uploads. It still publishes nothing: no check, no comment, no status, not
   even a job summary.
@@ -137,6 +150,117 @@ is really for:
   both and every outside contribution fails over a comment that was never
   possible.
 
+### Why the report carries a recording, and how it comes to have a link
+
+A verdict says a promise broke. It does not say what the browser did, and
+for a browser-driven test that is most of the work: an assertion that timed
+out waiting for a selector reads identically whether the page never loaded,
+loaded the wrong thing, or loaded the right thing behind a dialog.
+
+So the `playwright` runner records a video and a screenshot
+`retain-on-failure` -- nothing kept on a green run -- into the promise's own
+results directory, which is already what syncs back and already what the
+artifact carries. Nothing new is uploaded; what changes is that the report
+says where the recording is, and the page plays it.
+
+That the page *can* play it is a property of where the page lives. It is
+written to the artifact's root, and the recordings sit under it, so a
+relative `src` resolves once somebody extracts the archive -- no server, no
+network, no viewer to install.
+
+**A file inside a CI artifact has no address of its own.** An artifact is one
+archive, fetched whole, so a link to a video inside one is a download to go
+looking through. That is the platform, not a decision.
+
+What can be given an address is an artifact. So each broken promise's
+recording is *also* uploaded as an artifact of its own, unarchived -- which
+`actions/upload-artifact` allows for a single file, and which makes the
+artifact's name the file's name. The link then reaches the recording rather
+than an archive containing it, and the comment carries one per failure.
+
+Three things follow, and each is a cost accepted rather than avoided.
+
+**The names have to be made up.** Every runner calls its recording
+`video.webm`, and two artifacts in one run cannot share a name -- so each is
+staged under `<overlay>--<group>--<epic>--<outcome>.webm` before it is
+uploaded. That turns the run's artifact list into a list of what broke,
+which is worth more than the file's original name was.
+
+**The number is fixed.** A composite action cannot loop a `uses:` step, and
+how many promises broke is not known until the run has finished, so the
+uploads are unrolled and there are five of them. The cap is pinned in two
+files at once, which is the kind of agreement that goes quietly wrong -- one
+step too many never runs, one too few publishes nothing and says nothing --
+so a test reads both. Twenty, because a cap sized for the reviewer who
+wants to watch *the* failure would bind on almost every run and hand out its
+addresses arbitrarily: a project verifying a couple of shapes and keeping a
+handful of promises already produces more than a few recordings. A step
+whose recording the run didn't produce is skipped, so the unused ones cost a
+run nothing and only this file's length.
+
+**The bytes travel twice.** The recording stays in the results artifact as
+well, because that is where the page that plays it lives, and a page that
+linked out to a separate artifact per video would be a page that only works
+online. `publish_recordings: false` keeps the page and skips the uploads.
+
+Whether a promise held decides which address it gets, not whether it gets
+one. A broken promise's recording is what somebody is looking for, so those
+are published first and the cap spends itself on them. A kept promise's is
+published after them, because a project only has one where it asked to
+record its passes -- and a project that turns that on in order to watch a
+green suite would otherwise turn a switch on and see nothing for it.
+
+A kept promise's recording is linked too, under a heading of its own rather
+than mixed in with the failures: what a reviewer needs is what broke, and
+watching a suite that passed is somebody checking it exercises what they
+think it does. Without that heading the switch would be on and invisible --
+the recordings published and sitting in a run's artifact list nobody thought
+to open.
+
+What the comment still names, rather than links, is everything else a
+failure left: the screenshot, the log, the runner's own report. Those are
+read beside a report rather than watched, and the page shows them together
+-- so they stay in the archive and the comment points at it.
+
+What is reported as evidence is deliberately *not* a list of filenames any
+runner was told to produce. A runner writes whatever it writes -- seal has
+no reading of it beyond the verdict
+([RFC 0011](0011-outcome-runners.md)) -- so what came back is classified by
+what opening it does: video, image, trace, page, log. A project's own runner
+that leaves an `.mp4` and a `.log` behind is reported exactly like the one
+seal supplies, without having been told about either.
+
+Two things are excluded from it on purpose. The verdict file, because it is
+the answer the suite already read and reported. And the JUnit report,
+because its detail is already reported as the failed case names beside it --
+listing it again as "something to open" would bury the recording, which is
+the part that is actually new.
+
+Which runs keep a video is the project's, stated as two switches rather than
+one -- `record_outcome_video_on_failure` and
+`record_outcome_video_on_success` -- because they answer different questions.
+The first is what somebody needs to understand a red promise. The second is
+for checking a suite exercises what somebody thinks it does, since a test can
+pass through the wrong page; it costs a video per promise on every green run,
+which is why it is not the unstated answer.
+
+The pair collapses into the one word the runner understands, and one
+combination has no meaning: nothing records a pass and discards a failure. A
+run is recorded or it is not, and what the recording is kept for is decided
+afterwards. Asking for the passes alone is therefore refused at Tiltfile
+parse time rather than quietly rounded up to keeping both -- a project that
+asked for one thing and got a video of every failure as well would never be
+told.
+
+The screenshot follows a failure unconditionally: a single frame rather than
+a stream, so a project recording no footage is not paying for it, and it is
+the one artifact worth having where a video cannot be played.
+
+A `trace` is not recorded by default. It is the better debugging tool and it
+is megabytes per test, viewable only by loading it into Playwright's own
+viewer -- so it is a project's to ask for through `runner_args`, and it is
+reported like anything else that comes back.
+
 ### Why the rendering is capped, and where
 
 GitHub truncates an issue comment past 65536 characters and says nothing
@@ -167,6 +291,11 @@ indistinguishable from one the tree never declared.
   not. That is the same trade `actions/ci` already makes, and it is confined
   to the same place: nothing in `python/` or `tilt/` knows that GitHub
   exists, and the rendering it consumes is platform-neutral text.
+- A promise that fails now costs a video in the artifact, an upload of its
+  own, and that video's bytes twice. A suite where several fail costs
+  several. Bounded by `retain-on-failure` (a green run keeps and uploads
+  nothing), by the five-address cap, and by the artifact retention a project
+  sets -- and `publish_recordings: false` drops the second copy.
 - A project wanting its results somewhere Seal does not render for -- a
   dashboard, a chat channel, a check run with per-test annotations -- still
   builds that from `results` and the artifact, exactly as before. Nothing
@@ -192,6 +321,25 @@ to write a JUnit report.** It would have made one reader do. Rejected: it
 makes every project's runner responsible for a format it has no other use
 for, and it makes the verdict a report rather than the file the runner
 already writes -- two answers to one question again, one layer down.
+
+**Publishing every recording as one extra archive rather than one artifact
+each.** One upload instead of five, and a smaller download than the whole
+results artifact. Rejected: it is still an archive, so it still cannot be
+linked per failure -- which is the entire thing a reader wanted.
+
+**Selecting the files to publish with a glob in the workflow.** It would
+have removed the `--recordings-list` flag and the staging step. Rejected
+twice over: the classification of what counts as a recording lives beside
+the verdict it belongs to, and a `find` by extension in YAML is a second
+answer to it -- and a glob would also root the artifact wherever the matched
+files' common ancestor happens to be, and pick up a screenshot from a
+service's own test results.
+
+**Recording always rather than on failure.** Simpler to explain, and a
+passing run's video is occasionally interesting. Rejected: it is a video per
+test on every green pull request, uploaded and retained, to answer a
+question nobody asked -- and the run somebody actually goes looking through
+is the red one.
 
 **A third-party reporting action, documented as the recommended one.** It is
 what the worked example uses for its per-shape check run, and it is a good

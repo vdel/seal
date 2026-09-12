@@ -174,6 +174,51 @@ inputs:
       one repository, say) gives each call its own name.
     required: false
     default: 'tests-results'
+  record_outcome_video_on_failure:
+    description: >
+      Whether a promise the run does not see kept keeps a video of its
+      browser -- "true" or "false", true by default.
+
+      This is what a red promise costs somebody: an assertion that timed out
+      waiting for a selector reads the same whether the page never loaded,
+      loaded the wrong thing, or loaded the right thing behind a dialog, and
+      only a recording tells them apart. Reaches the runner as
+      `seal ci -- --record_outcome_video_on_failure`.
+    required: false
+    default: 'true'
+  record_outcome_video_on_success:
+    description: >
+      Whether a promise the run *does* see kept keeps one too -- "true" or
+      "false", false by default.
+
+      For checking that a suite exercises what somebody thinks it does: a
+      test can pass through the wrong page. It costs a video per promise on
+      every green run, kept and uploaded, which is why it is worth turning
+      off once a suite is trusted.
+
+      Nothing records a pass and discards a failure, so this without
+      `record_outcome_video_on_failure` is refused rather than quietly
+      keeping both.
+    required: false
+    default: 'false'
+  publish_recordings:
+    description: >
+      Whether to publish each broken promise's recording under an address of
+      its own -- "true" or "false", true by default.
+
+      A file inside a CI artifact has no address: an artifact is one archive,
+      fetched whole, so a link to one is a download to go looking through.
+      Uploaded on its own and unarchived, a recording gets a URL a reader can
+      open, and `recordings` below carries it per promise -- which is what
+      lets a report say "watch this failure" rather than "download this and
+      find it".
+
+      What it costs is one upload per broken promise, and the recording's
+      bytes travelling twice: it stays in the results artifact as well, since
+      that is where the page that plays it lives. A project that would rather
+      not pay that turns this off and keeps the page.
+    required: false
+    default: 'true'
   results_retention_days:
     description: >
       How long the results artifact is kept. It exists to be consumed by
@@ -223,6 +268,27 @@ outputs:
   results_artifact:
     description: "The name this run uploaded its results under, so a caller downloading it names it once."
     value: ${{ inputs.results_artifact }}
+  recordings:
+    description: >
+      Where each broken promise's recording was published, as a JSON object
+      keyed by `<overlay>/<slug>`. What a report links to say "watch this
+      failure". Empty where nothing broke, or where publishing them was
+      turned off.
+    value: ${{ steps.recordings.outputs.published }}
+  project_url:
+    description: >
+      Where this project's own files are browsed, at the revision these
+      results are about. What lets a report link each promise to the promise
+      itself -- the prompt it was written from, beside the test translated
+      from it -- rather than naming a slug a reader has to go looking for.
+    value: ${{ steps.project.outputs.url }}
+  results_artifact_url:
+    description: >
+      Where that artifact can be downloaded. A file inside it has no address
+      of its own -- the artifact is one archive -- so this is as close as a
+      report published outside the run can get to the recording of a failure.
+      Empty where nothing was uploaded.
+    value: ${{ steps.upload.outputs.artifact-url }}
 
 runs:
   using: composite
@@ -541,6 +607,8 @@ runs:
         # python/src/seal/providers.py). Empty leaves the project's own
         # `default_env` to say.
         SEAL_CREDENTIALS_ENV: ${{ inputs.credentials_env }}
+        VIDEO_ON_FAILURE: ${{ inputs.record_outcome_video_on_failure }}
+        VIDEO_ON_SUCCESS: ${{ inputs.record_outcome_video_on_success }}
         # Tells cached_docker_build() (tilt/docker_build at the repo root) to
         # build via buildx with GitHub Actions layer caching instead of
         # Tilt's plain docker_build(). Local `tilt up` never sets this.
@@ -590,7 +658,9 @@ runs:
         "$RUNNER_TEMP/fresh-cluster.sh"
         status=0
         uvx --from ${{ github.action_path }}/../../python seal ci -- \
-          --k8s_overlay "$K8S_OVERLAY" --build_type "$build_type" "${outcomes[@]}" || status=$?
+          --k8s_overlay "$K8S_OVERLAY" --build_type "$build_type" "${outcomes[@]}" \
+          --record_outcome_video_on_failure "$VIDEO_ON_FAILURE" \
+          --record_outcome_video_on_success "$VIDEO_ON_SUCCESS" || status=$?
         mkdir -p "$RUNNER_TEMP/seal-results"
         if [ -d tests-results ]; then
           mv tests-results "$RUNNER_TEMP/seal-results/$K8S_OVERLAY"
@@ -606,6 +676,8 @@ runs:
       env:
         SEAL_CREDENTIALS_ENV: ${{ inputs.credentials_env }}
         SEAL_BUILDX_CACHE: "1"
+        VIDEO_ON_FAILURE: ${{ inputs.record_outcome_video_on_failure }}
+        VIDEO_ON_SUCCESS: ${{ inputs.record_outcome_video_on_success }}
       shell: bash
       run: |
         # --build_type runtime: the images a real environment runs. They
@@ -623,7 +695,9 @@ runs:
           echo "::group::$overlay"
           "$RUNNER_TEMP/fresh-cluster.sh"
           uvx --from ${{ github.action_path }}/../../python seal ci -- \
-            --k8s_overlay "$overlay" --build_type runtime || status=$?
+            --k8s_overlay "$overlay" --build_type runtime \
+            --record_outcome_video_on_failure "$VIDEO_ON_FAILURE" \
+            --record_outcome_video_on_success "$VIDEO_ON_SUCCESS" || status=$?
           mkdir -p "$RUNNER_TEMP/seal-results"
           if [ -d tests-results ]; then
             mv tests-results "$RUNNER_TEMP/seal-results/$overlay"
@@ -736,6 +810,37 @@ runs:
         mkdir -p "$RUNNER_TEMP/seal-results"
         printf '%s\n' "$results" > "$RUNNER_TEMP/seal-results/results.json"
 
+    - name: Say where this project is browsed
+      id: project
+      # Composed here because every part of it is a fact about the pipeline:
+      # which forge, which repository, which revision, and where in it the
+      # project the run was pointed at lives. The CLI is handed the result
+      # and appends the path each promise reported, so nothing downstream
+      # has to know how a forge spells a link to a directory.
+      if: (!cancelled())
+      env:
+        SEAL_PROJECT_DIR: ${{ inputs.project_dir }}
+        # Where files are browsed, which is not where the API lives, and is
+        # not github.com on an enterprise instance.
+        SEAL_SERVER_URL: ${{ github.server_url }}
+        # The pull request's head rather than `github.sha`, which on a
+        # pull_request event is the merge commit GitHub made to test with --
+        # a revision that appears nowhere in the branch, and so links a
+        # reviewer to a tree they cannot find again. `github.sha` is the
+        # fallback for an event that carries no pull request head.
+        SEAL_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      shell: bash
+      run: |
+        url="$SEAL_SERVER_URL/$GITHUB_REPOSITORY/tree/$SEAL_COMMIT_SHA"
+        # A project at the repository root is addressed by the revision
+        # alone: a trailing '.' or '/' is a path a forge has no page for.
+        path="${SEAL_PROJECT_DIR#./}"
+        path="${path%/}"
+        if [ -n "$path" ] && [ "$path" != "." ]; then
+          url="$url/$path"
+        fi
+        echo "url=$url" >> "$GITHUB_OUTPUT"
+
     - name: Render what each run found
       # A page, in the artifact this run already uploads. It publishes
       # nothing and needs no scope: what it adds is that the results a
@@ -752,6 +857,8 @@ runs:
       # is one reader of a report, and everything downstream renders what it
       # said.
       if: (!cancelled())
+      env:
+        SEAL_PROJECT_URL: ${{ steps.project.outputs.url }}
       shell: bash
       run: |
         if [ ! -f "$RUNNER_TEMP/seal-results/results.json" ]; then
@@ -765,9 +872,336 @@ runs:
           --results "$RUNNER_TEMP/seal-results/results.json" \
           --html "$RUNNER_TEMP/seal-results/index.html" \
           --markdown "$RUNNER_TEMP/seal-results/report.md" \
+          --recordings-list "$RUNNER_TEMP/seal-recordings.json" \
+          --project-url "$SEAL_PROJECT_URL" \
           --source "${{ github.repository }}@${{ github.sha }}"
 
+    - name: Stage each broken promise's recording
+      id: stage
+      # A file inside an artifact has no address of its own, so a recording
+      # worth watching is published on its own below -- unarchived, which
+      # `actions/upload-artifact` allows for a single file and which makes
+      # the artifact's name the file's own name. So each one is staged here
+      # under a name built from the run and the promise: every runner calls
+      # its recording `video.webm`, and two artifacts in one run cannot share
+      # a name.
+      #
+      # Which files those are is the CLI's to say, not this file's: the
+      # classification lives beside the verdict it belongs to
+      # (python/src/seal/outcome_suite.py), and a `find` by extension here
+      # would be a second answer to it.
+      #
+      # Hard-linked rather than copied. The recording stays in the results
+      # artifact as well, since that is where the page that plays it lives,
+      # and a link costs no disk for what can be a hundred megabytes of
+      # video.
+      if: (!cancelled()) && inputs.publish_recordings == 'true'
+      shell: bash
+      run: |
+        if [ ! -f "$RUNNER_TEMP/seal-recordings.json" ]; then
+          echo "Nothing was read, so there is nothing to stage."
+          exit 0
+        fi
+        uv run --no-project python - <<'PY'
+        import json, os, pathlib, shutil
+
+        temp = pathlib.Path(os.environ["RUNNER_TEMP"])
+        staged = temp / "seal-recordings"
+        staged.mkdir(parents=True, exist_ok=True)
+        published = json.loads((temp / "seal-recordings.json").read_text())
+
+        # Appended to $GITHUB_OUTPUT directly rather than printed into a
+        # redirect, unlike the other scripts here: this one also has
+        # something to say to the log, and a warning printed into the
+        # outputs file is both an unread warning and a malformed output.
+        outputs = open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8")
+
+        for index, entry in enumerate(published, start=1):
+            source = temp / "seal-results" / entry["path"]
+            if not source.is_file():
+                # The reading named it, so it was there when the run ended.
+                # Said out loud rather than passed over: a recording that has
+                # since gone is a pipeline problem, not a promise that kept
+                # itself.
+                print(
+                    "::warning::{} was reported and is not there".format(entry["path"])
+                )
+                continue
+            target = staged / entry["name"]
+            target.unlink(missing_ok=True)
+            try:
+                os.link(source, target)
+            except OSError:
+                shutil.copyfile(source, target)
+            outputs.write("key{}={}\n".format(index, entry["key"]))
+            outputs.write("path{}={}\n".format(index, target))
+            print("staged {} as {}".format(entry["path"], entry["name"]))
+        outputs.close()
+        PY
+
+    - name: Publish recording 1
+      id: recording1
+      # One upload per recording, unrolled. A composite action cannot loop a
+      # `uses:` step, and how many promises broke is not known until the run
+      # has finished -- so the number of addresses a run can hand out is
+      # fixed here, and pinned against the CLI's own cap
+      # (MAX_PUBLISHED_RECORDINGS in python/src/seal/seal.py) by a test. An
+      # upload whose recording the run did not produce is skipped, so the
+      # steps a run has no use for cost it nothing.
+      #
+      # `archive: false` is what makes the URL worth having: the file is
+      # uploaded as it is rather than zipped, so the link reaches the
+      # recording instead of an archive containing it. It also makes the
+      # artifact's name the file's name, which is why the staging step above
+      # renames each one after the promise it belongs to.
+      if: (!cancelled()) && steps.stage.outputs.path1 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path1 }}
+        archive: false
+        # A re-run of the same commit publishes the same names again, and an
+        # artifact name has to be unique within a run.
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 2
+      id: recording2
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path2 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path2 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 3
+      id: recording3
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path3 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path3 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 4
+      id: recording4
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path4 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path4 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 5
+      id: recording5
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path5 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path5 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 6
+      id: recording6
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path6 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path6 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 7
+      id: recording7
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path7 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path7 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 8
+      id: recording8
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path8 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path8 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 9
+      id: recording9
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path9 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path9 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 10
+      id: recording10
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path10 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path10 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 11
+      id: recording11
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path11 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path11 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 12
+      id: recording12
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path12 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path12 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 13
+      id: recording13
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path13 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path13 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 14
+      id: recording14
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path14 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path14 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 15
+      id: recording15
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path15 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path15 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 16
+      id: recording16
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path16 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path16 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 17
+      id: recording17
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path17 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path17 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 18
+      id: recording18
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path18 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path18 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 19
+      id: recording19
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path19 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path19 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 20
+      id: recording20
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path20 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path20 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Say where each recording was published
+      id: recordings
+      # The uploads above each know their own URL and nothing else. This is
+      # what turns them into one thing a report can look a promise up in --
+      # keyed by the run and the slug, because two shapes verified in one
+      # pipeline can break the same promise and a recording shown under the
+      # wrong one is worse than none.
+      if: (!cancelled())
+      env:
+        SEAL_RECORDINGS: >-
+          [
+            {"key": "${{ steps.stage.outputs.key1 }}", "url": "${{ steps.recording1.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key2 }}", "url": "${{ steps.recording2.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key3 }}", "url": "${{ steps.recording3.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key4 }}", "url": "${{ steps.recording4.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key5 }}", "url": "${{ steps.recording5.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key6 }}", "url": "${{ steps.recording6.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key7 }}", "url": "${{ steps.recording7.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key8 }}", "url": "${{ steps.recording8.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key9 }}", "url": "${{ steps.recording9.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key10 }}", "url": "${{ steps.recording10.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key11 }}", "url": "${{ steps.recording11.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key12 }}", "url": "${{ steps.recording12.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key13 }}", "url": "${{ steps.recording13.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key14 }}", "url": "${{ steps.recording14.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key15 }}", "url": "${{ steps.recording15.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key16 }}", "url": "${{ steps.recording16.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key17 }}", "url": "${{ steps.recording17.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key18 }}", "url": "${{ steps.recording18.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key19 }}", "url": "${{ steps.recording19.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key20 }}", "url": "${{ steps.recording20.outputs.artifact-url }}"}
+          ]
+      shell: bash
+      run: |
+        uv run --no-project python - <<'PY' >> "$GITHUB_OUTPUT"
+        import json, os
+
+        # An entry whose step did not run has both halves empty. Dropped
+        # rather than published as a promise with a link to nowhere.
+        published = {
+            entry["key"]: entry["url"]
+            for entry in json.loads(os.environ["SEAL_RECORDINGS"])
+            if entry["key"] and entry["url"]
+        }
+        print("published=" + json.dumps(published, separators=(",", ":")))
+        PY
+
     - name: Upload test results artifact
+      id: upload
       uses: actions/upload-artifact@v7
       if: (!cancelled())
       with:

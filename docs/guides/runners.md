@@ -241,6 +241,15 @@ that release drives, and a generated `playwright.config.js` wiring up:
 - a `junit` reporter writing each outcome's `junit.xml`, which is what puts
   outcome results in the same CI report as each service's own;
 - an `html` reporter and Playwright's own artifacts, beside it;
+- a **video of the browser and a screenshot** -- which runs keep a video is
+  yours to say, through `--record_outcome_video_on_failure` and
+  `--record_outcome_video_on_success` (see
+  [the flag table](../reference/tilt-extensions.md#tilt-config-flags)).
+  Unset, a broken promise keeps its recording and a kept one does not, which
+  is what a red promise costs somebody: an assertion that timed out waiting
+  for a selector reads the same whether the page never loaded, loaded the
+  wrong thing, or loaded the right thing behind a dialog. The screenshot
+  follows a failure either way;
 - Chromium's sandbox off and `/dev/shm` unused -- properties of running a
   browser in a pod, not of any one project.
 
@@ -271,6 +280,21 @@ all-browser image would carry Firefox and WebKit as freight, paid for three
 times over -- the daemon that builds the image, the registry it's pushed to,
 and the node that pulls it -- which on a CI runner already holding a cluster
 is the difference between a run and a runner that dies partway through one.
+
+**Where the recordings go**, and how to get at them: into that outcome's own
+results directory, which syncs back to the project under
+`tests-results/outcomes/<group>/<epic>/<outcome>/` and travels in whatever
+your CI uploads. The page `actions/ci` renders plays them where they sit
+(see [Continuous integration](continuous-integration.md#watching-a-failure)).
+
+A `trace` is not recorded by default: it is the better debugging tool and it
+is megabytes per test, viewable only in Playwright's own viewer. A project
+that wants one says so, and it lands beside the videos:
+
+```json
+{"runner": [{"name": "ui", "runner_type": "playwright",
+             "runner_args": ["--trace", "retain-on-failure"]}]}
+```
 
 What it deliberately doesn't do: retry a failing test, run more than one
 browser, or shard. A retry would paper over exactly the flakiness the

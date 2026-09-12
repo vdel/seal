@@ -138,7 +138,7 @@ import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from seal.checks import (
     configured_k8s_dir_name,
@@ -176,6 +176,8 @@ from seal.outcome_suite import (
     NO_VERDICT,
     OUTCOMES_RESULTS_SUBDIR,
     PASSED,
+    RECORDING_KINDS,
+    evidence_in,
     UNCONFIRMED,
     UNTRANSLATED,
     VERDICT_FILENAME,
@@ -377,6 +379,33 @@ def cmd_tests_verdict(args: list[str]) -> int:
 # alongside, so a capped listing is never readable as a shorter one.
 MAX_RENDERED_FAILURES = 50
 
+# How many files one promise contributes to a report as something to open. A
+# browser-driven test that failed leaves a recording, a screenshot and a log,
+# which is the set somebody wants; a suite that left two hundred files behind
+# has said everything it has to say in the first few, and the rest is a
+# listing nobody reads. Reported only for a promise that is not passing --
+# every runner seal supplies records on failure, so a green promise has
+# nothing to show and a listing of its log per promise would bury the one
+# that does.
+MAX_RENDERED_EVIDENCE = 12
+
+# How many recordings a run publishes under an address of their own. Each
+# one is an upload of its own, and a pipeline has to declare its uploads
+# ahead of knowing how many there will be -- so this is a fixed number of
+# them rather than however many a run produced, and it is pinned against
+# the pipeline that declares them (python/tests/test_ci_action.py).
+#
+# High enough that reaching it is unusual rather than routine: a project
+# verifying a couple of shapes and keeping a handful of promises produces
+# more than a few recordings on a green run alone, so a cap sized for the
+# reviewer who wants to watch *the* failure would bind on almost every run
+# and hand out addresses arbitrarily. The cost of each one is a declared
+# upload in the pipeline and nothing at runtime, since an upload for a
+# recording a run did not produce is skipped. Everything past the cap is
+# still in the results artifact, and the count of what was left out is
+# reported.
+MAX_PUBLISHED_RECORDINGS = 20
+
 
 def cmd_tests_results(args: list[str]) -> int:
     """Internal: what every run of a pipeline found, as JSON on stdout.
@@ -544,6 +573,15 @@ def _rendered_outcomes(
             {
                 "slug": result.outcome.slug,
                 "headline": result.outcome.headline,
+                # Where the promise itself lives, relative to the project
+                # root: the prompt, and whatever has been translated from
+                # it. What a reader of a report asks next about a promise
+                # they don't recognise is what it actually says, and a
+                # renderer given somewhere this project is browsed can turn
+                # this into a link to it. Reported rather than derived from
+                # the slug downstream, because how the tree spells a promise
+                # is the tree's own business.
+                "path": _rendered_promise_path(result.outcome.directory),
                 "state": result.state,
                 "quarantined": result.outcome.quarantined,
                 "failed": [
@@ -554,9 +592,71 @@ def _rendered_outcomes(
                 ]
                 if result.state == FAILED
                 else [],
+                # Where the recording of what happened is, for a promise this
+                # run did not see kept. Relative to this run's own results
+                # root, which is what makes it a path inside the artifact the
+                # run uploads once the run's name is prefixed -- the reader
+                # of a report is looking at a download, and an absolute path
+                # from the machine that produced it names nothing there.
+                **_rendered_evidence(results_root, result),
             }
             for result in results
         ],
+    }
+
+
+def _rendered_promise_path(directory: Path) -> str:
+    """One promise's own directory, as a path a reader can resolve.
+
+    Relative to the project root, which is where this command is invoked
+    from -- an absolute path from the machine that ran the suite names
+    nothing on a forge, and nothing in a checkout somebody else made.
+    Empty where it cannot be said, which is a renderer's cue to name the
+    promise without linking it.
+    """
+    if not directory.is_absolute():
+        return directory.as_posix()
+    try:
+        return directory.relative_to(Path.cwd()).as_posix()
+    except ValueError:
+        return ""
+
+
+def _rendered_evidence(results_root: Path, result: OutcomeResult) -> dict:
+    """What this promise left behind to open, where it left anything.
+
+    A promise this run did not see kept is reported with everything it
+    left: the recording, the screenshot, the log, the runner's own report.
+    That is what somebody has to work through.
+
+    A promise that held is reported with its recording and nothing else. A
+    project can ask for one (record_outcome_video_on_success, see
+    tilt/seal/config.Tiltfile) precisely so it can watch a suite that
+    passes -- and a project that did not ask has no recording here, so this
+    says nothing on a green run. What is left out either way is the log and
+    the report: a line of those per kept promise would bury the one promise
+    that broke.
+
+    Nothing at all for a promise with no test yet: there was no run to
+    record.
+
+    The key is absent rather than empty where there is nothing, so a reader
+    can tell a promise that recorded nothing from one nobody looked for a
+    recording from.
+    """
+    if result.state == UNTRANSLATED:
+        return {}
+    found = evidence_in(result.results_dir)
+    if result.state == PASSED:
+        found = [(kind, path) for kind, path in found if kind in RECORDING_KINDS]
+    if not found:
+        return {}
+    return {
+        "evidence": [
+            {"kind": kind, "path": str((result.results_dir / path).relative_to(results_root))}
+            for kind, path in found[:MAX_RENDERED_EVIDENCE]
+        ],
+        "evidence_omitted": max(0, len(found) - MAX_RENDERED_EVIDENCE),
     }
 
 
@@ -620,11 +720,41 @@ def cmd_report(args: list[str]) -> int:
         help="what `seal _tests-results` printed; '-' reads stdin.",
     )
     parser.add_argument("--html", metavar="FILE", default=None)
+    parser.add_argument(
+        "--recordings-list",
+        metavar="FILE",
+        default=None,
+        help=(
+            "where to write what a pipeline should publish under an address "
+            "of its own: one JSON entry per recording a promise this run did "
+            "not see kept left behind, with the name to publish it as."
+        ),
+    )
+    parser.add_argument(
+        "--recordings",
+        metavar="FILE",
+        default=None,
+        help=(
+            "a JSON object mapping what --recordings-list named to where each "
+            "one ended up, so the Markdown can link a failure to its own "
+            "recording rather than to the archive holding it."
+        ),
+    )
     parser.add_argument("--markdown", metavar="FILE", default=None)
     parser.add_argument(
         "--title",
         default=reporting.DEFAULT_TITLE,
         help="the heading both renderings carry.",
+    )
+    parser.add_argument(
+        "--artifact-url",
+        default="",
+        help=(
+            "where the files the rendering names can be fetched. A file "
+            "inside a CI artifact has no address of its own, so the Markdown "
+            "points at the archive; the page inside it uses relative paths "
+            "and needs none."
+        ),
     )
     parser.add_argument(
         "--source",
@@ -635,12 +765,24 @@ def cmd_report(args: list[str]) -> int:
             "names a run in whatever performed it."
         ),
     )
+    parser.add_argument(
+        "--project-url",
+        default="",
+        help=(
+            "where this project's own files are browsed, at the revision "
+            "these results are about. Each promise's name is linked to the "
+            "promise itself under it -- the prompt, and the test translated "
+            "from it -- which is what a reader asks for next about a promise "
+            "they do not recognise. Omitted, the promises are named and not "
+            "linked."
+        ),
+    )
     parsed = parser.parse_args(args)
 
-    if not parsed.html and not parsed.markdown:
+    if not parsed.html and not parsed.markdown and not parsed.recordings_list:
         raise SealError(
-            "Error: seal _report renders nothing unless --html or --markdown "
-            "names where to write it."
+            "Error: seal _report renders nothing unless --html, --markdown or "
+            "--recordings-list names where to write it."
         )
 
     raw = sys.stdin.read() if parsed.results == "-" else Path(parsed.results).read_text(
@@ -661,14 +803,40 @@ def cmd_report(args: list[str]) -> int:
             f"a {type(runs).__name__}."
         )
 
+    if parsed.recordings_list:
+        Path(parsed.recordings_list).write_text(
+            json.dumps(_recordings_to_publish(runs), indent=2) + "\n", encoding="utf-8"
+        )
+
+    recordings = {}
+    if parsed.recordings:
+        recordings = json.loads(Path(parsed.recordings).read_text(encoding="utf-8") or "{}")
+        if not isinstance(recordings, dict):
+            raise SealError(
+                "Error: --recordings takes a JSON object mapping a recording to "
+                f"where it was published, and this is a {type(recordings).__name__}."
+            )
+
     if parsed.html:
         Path(parsed.html).write_text(
-            reporting.render_html(runs, title=parsed.title, source=parsed.source),
+            reporting.render_html(
+                runs,
+                title=parsed.title,
+                source=parsed.source,
+                project_url=parsed.project_url,
+            ),
             encoding="utf-8",
         )
     if parsed.markdown:
         Path(parsed.markdown).write_text(
-            reporting.render_markdown(runs, title=parsed.title), encoding="utf-8"
+            reporting.render_markdown(
+                runs,
+                title=parsed.title,
+                recordings=recordings,
+                artifact_url=parsed.artifact_url,
+                project_url=parsed.project_url,
+            ),
+            encoding="utf-8",
         )
     return 0
 
@@ -2089,6 +2257,58 @@ def cmd_outcomes_touched(args: list[str]) -> int:
         "application, the fix is not there yet."
     )
     return 1
+
+
+def _recordings_to_publish(runs: dict) -> list[dict]:
+    """What a pipeline should give an address of its own, in the order a
+    reader wants them.
+
+    One per promise that left a recording, and only the first it left: a
+    second angle on the same run is not what somebody is missing, and every
+    published recording costs an upload.
+
+    Whether a promise held decides the *order*, not whether it is here. A
+    broken promise's recording is what somebody is looking for, so those
+    come first and the cap spends itself on them; a kept promise's is there
+    for a project that asked to record its passes, which is how such a
+    project sees that it worked. A project that did not ask has no recording
+    on a kept promise and publishes nothing extra.
+
+    Each entry carries the `key` the rendering will look the result up under,
+    the `path` inside the run's results, and the `name` to publish it as.
+    The name is built from the run and the slug rather than from the file,
+    because what a runner called it is `video.webm` for every promise in the
+    tree -- and a pipeline that publishes each under its own name needs those
+    to differ, while somebody reading a list of them needs to know which
+    promise it belongs to.
+    """
+    published = []
+    for name, run in runs.items():
+        broken = reporting.failed_promises(run)
+        ordered = broken + [
+            promise for promise in reporting.promises(run) if promise not in broken
+        ]
+        for promise in ordered:
+            recording = next(
+                (
+                    item
+                    for item in promise.get("evidence", [])
+                    if item.get("kind") in RECORDING_KINDS
+                ),
+                None,
+            )
+            if recording is None:
+                continue
+            slug = promise.get("slug", "")
+            suffix = PurePosixPath(recording["path"]).suffix
+            published.append(
+                {
+                    "key": reporting.recording_key(name, slug),
+                    "path": "{}/{}".format(name, recording["path"]),
+                    "name": "{}--{}{}".format(name, slug.replace("/", "--"), suffix),
+                }
+            )
+    return published[:MAX_PUBLISHED_RECORDINGS]
 
 
 def main(argv: list[str] | None = None) -> int:

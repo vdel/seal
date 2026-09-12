@@ -27,7 +27,7 @@
 # holds" has to be distinguishable from "the one test somebody was looking at
 # passed" -- so every outcome's verdict is read together, by
 # `seal outcomes run`, after every group has finished.
-load('./config.Tiltfile', 'run_outcomes', 'PROJECT_ROOT', 'seal_cli')
+load('./config.Tiltfile', 'run_outcomes', 'outcome_video', 'PROJECT_ROOT', 'seal_cli')
 load('./resources.Tiltfile', 'seal_resource_name')
 load('./tests.Tiltfile', 'LOCAL_TESTS_RESULTS', 'SYNCBACK_RSYNC_OPTIONS')
 load('ext://__seal_syncback', 'syncback')  # After config: it registers this alias, and allow_k8s_contexts
@@ -219,6 +219,27 @@ RUN npm init -y > /dev/null \
 
 # Where this outcome's results go is read at run time rather than baked in:
 # one container runs several outcomes, each reporting into its own directory.
+#
+# A run leaves a video and a screenshot behind, under `outputDir` and so
+# inside the results that sync back to the project. What a red promise costs
+# somebody is working out what the browser actually did, and a recording of
+# it answers that in a way a stack trace cannot -- an assertion that timed
+# out waiting for a selector says the same thing whether the page never
+# loaded, loaded the wrong thing, or loaded the right thing behind a dialog.
+#
+# Which runs keep theirs is the project's to say, through
+# `--record_outcome_video_on_failure` / `--record_outcome_video_on_success`
+# (see config.Tiltfile, which turns the pair into the one value this config
+# takes). Unset, a failure's recording is kept and a passing run's is not.
+#
+# The screenshot follows the failure unconditionally: it is a single frame
+# rather than a stream, so a project that wants no footage is not paying for
+# it, and it is the one artifact worth having when a video cannot be played.
+#
+# A `trace` is deliberately not on: it is the better debugging tool and it is
+# megabytes per test, viewable only by loading it into Playwright's own
+# viewer -- so it is left to a project that wants it, through
+# `runner_args: ["--trace", "retain-on-failure"]` in its seal-test-config.json.
 RUN printf '%s\n' \
   "const results = process.env.{results_var} || '{results}';" \
   "module.exports = {{" \
@@ -228,6 +249,8 @@ RUN printf '%s\n' \
   "  use: {{" \
   "    baseURL: process.env.{base_url_var}," \
   "    launchOptions: {{ args: ['--no-sandbox', '--disable-dev-shm-usage'] }}," \
+  "    video: '{video}'," \
+  "    screenshot: 'only-on-failure'," \
   "  }}," \
   "  reporter: [" \
   "    ['list']," \
@@ -447,6 +470,7 @@ def _playwright_dockerfile():
         results=CONTAINER_RESULTS_DIR,
         results_var=RESULTS_ENV_VAR,
         base_url_var=BASE_URL_ENV_VAR,
+        video=outcome_video,
         separator=ARGUMENT_SEPARATOR,
         verdict=VERDICT_FILENAME,
         done=DONE_FILENAME,

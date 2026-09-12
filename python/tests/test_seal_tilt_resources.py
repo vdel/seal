@@ -1592,3 +1592,109 @@ def test_a_project_with_no_overlays_at_all_is_told_so(tmp_path_factory):
     stderr = _evaluation_failure(project)
 
     assert "no overlays at all" in stderr
+
+
+# --- what a run records, and what it refuses to ----------------------------
+
+# The values Playwright's own config takes, as tilt/seal/config.Tiltfile
+# spells them. Named here because what is asserted is the agreement between
+# two switches a project sets and the one word the runner understands.
+VIDEO_OFF = "video: 'off'"
+VIDEO_ALWAYS = "video: 'on'"
+VIDEO_ON_FAILURE = "video: 'retain-on-failure'"
+
+
+def _recording(tmp_path_factory, *switches: str) -> str:
+    """What the generated Playwright config says about recording, under these
+    switches."""
+    project = _project(
+        tmp_path_factory, outcomes={OUTCOME: DEFAULT_RUNNER}, **{WITHOUT_RESET: ""}
+    )
+    dockerfile = _dockerfile_of(_evaluate(project, *switches, gate=True), RUN_RESOURCE)
+    return next(line.strip() for line in dockerfile.splitlines() if "video:" in line)
+
+
+def test_a_run_that_says_nothing_keeps_a_failures_recording_and_no_others(
+    tmp_path_factory,
+):
+    """What a red promise costs somebody is understanding what the browser
+    did. A green suite that kept a video per test would fill every artifact
+    with footage of things working, so the unstated answer is the one a
+    reader needs and nothing more."""
+    assert VIDEO_ON_FAILURE in _recording(tmp_path_factory)
+
+
+def test_keeping_both_records_every_run(tmp_path_factory):
+    """For checking a suite exercises what somebody thinks it does: a test
+    can pass through the wrong page, and only a recording of a pass shows
+    that."""
+    assert VIDEO_ALWAYS in _recording(
+        tmp_path_factory,
+        "--record_outcome_video_on_failure",
+        "true",
+        "--record_outcome_video_on_success",
+        "true",
+    )
+
+
+def test_keeping_neither_records_nothing(tmp_path_factory):
+    """A project that would rather not pay for footage at all. `off`, not a
+    recording quietly thrown away: encoding a video per test costs the run
+    time whether or not anything keeps it."""
+    assert VIDEO_OFF in _recording(
+        tmp_path_factory,
+        "--record_outcome_video_on_failure",
+        "false",
+        "--record_outcome_video_on_success",
+        "false",
+    )
+
+
+def test_keeping_only_the_passes_is_refused(tmp_path_factory):
+    """Nothing records a pass and discards a failure: a run is recorded or it
+    is not, and what the recording is kept for is decided afterwards. Refused
+    rather than quietly rounded up to keeping both -- a project that asked
+    for only the passes would otherwise get every failure's video as well and
+    never be told."""
+    project = _project(
+        tmp_path_factory, outcomes={OUTCOME: DEFAULT_RUNNER}, **{WITHOUT_RESET: ""}
+    )
+
+    result = subprocess.run(
+        [
+            "tilt",
+            "alpha",
+            "tiltfile-result",
+            "--",
+            "--record_outcome_video_on_failure",
+            "false",
+            "--record_outcome_video_on_success",
+            "true",
+        ],
+        cwd=project,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "record_outcome_video_on_failure on as well" in result.stderr
+
+
+def test_a_recording_value_the_extension_does_not_know_is_refused(tmp_path_factory):
+    """"yes" is not one of the two words. Read for truthiness it would be a
+    project asking to record and getting nothing, with the run still green --
+    so it is refused by name before anything is built."""
+    project = _project(
+        tmp_path_factory, outcomes={OUTCOME: DEFAULT_RUNNER}, **{WITHOUT_RESET: ""}
+    )
+
+    result = subprocess.run(
+        ["tilt", "alpha", "tiltfile-result", "--",
+         "--record_outcome_video_on_failure", "yes"],
+        cwd=project,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "Invalid record_outcome_video_on_failure 'yes'" in result.stderr

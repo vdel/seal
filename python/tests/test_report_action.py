@@ -81,6 +81,53 @@ def test_the_results_are_what_it_renders_and_they_are_required():
     )
 
 
+def test_where_the_recordings_live_reaches_the_rendering():
+    """The comment names the path of a recording a failure left behind, and
+    a path inside a CI artifact is not something anybody can click. Linking
+    the archive is the whole of what a comment can do about that, so the
+    caller's artifact URL has to reach the renderer."""
+    inputs = _action()["inputs"]
+    render = next(step for step in _steps() if step["name"] == "Render what the run found")
+
+    assert inputs["artifact_url"]["required"] is False
+    # Optional, and rendered as nothing: a run that uploaded no artifact
+    # reports its URL as empty, and the paths alone are still what somebody
+    # needs to find the files.
+    assert inputs["artifact_url"]["default"] == ""
+    assert render["env"]["SEAL_ARTIFACT_URL"] == "${{ inputs.artifact_url }}"
+    assert "--artifact-url" in render["run"]
+
+
+def test_where_each_recording_was_published_reaches_the_rendering():
+    """What lets the comment say "watch this failure" with a link that
+    reaches the recording. Defaulted to an empty object, so a green run and a
+    project that publishes none render the same way -- paths named, archive
+    linked."""
+    inputs = _action()["inputs"]
+    render = next(step for step in _steps() if step["name"] == "Render what the run found")
+
+    assert inputs["recordings"]["required"] is False
+    assert inputs["recordings"]["default"] == "{}"
+    assert render["env"]["SEAL_RECORDINGS"] == "${{ inputs.recordings }}"
+    assert "--recordings " in render["run"]
+
+
+def test_where_the_project_is_browsed_reaches_the_rendering():
+    """What turns each promise's name into a link to the promise itself. The
+    gate works it out -- it is the action that knows which revision and which
+    directory -- and the caller passes it on, the same way it passes where
+    the recordings went."""
+    inputs = _action()["inputs"]
+    render = next(step for step in _steps() if step["name"] == "Render what the run found")
+
+    assert inputs["project_url"]["required"] is False
+    # Optional, and rendered as nothing: outside a pipeline that can say
+    # where a project is browsed, a promise is named rather than linked.
+    assert inputs["project_url"]["default"] == ""
+    assert render["env"]["SEAL_PROJECT_URL"] == "${{ inputs.project_url }}"
+    assert "--project-url" in render["run"]
+
+
 def test_the_comment_and_the_summary_can_each_be_turned_off():
     """Which of them a project wants is the project's. A page nobody asked
     for on every pull request is exactly the inheritance the boundary
