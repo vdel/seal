@@ -904,7 +904,9 @@ runs:
       # `uses:` step, and how many promises broke is not known until the run
       # has finished -- so the number of addresses a run can hand out is
       # fixed here, and pinned against the CLI's own cap
-      # (MAX_PUBLISHED_RECORDINGS in python/src/seal/seal.py) by a test.
+      # (MAX_PUBLISHED_RECORDINGS in python/src/seal/seal.py) by a test. An
+      # upload whose recording the run did not produce is skipped, so the
+      # steps a run has no use for cost it nothing.
       #
       # `archive: false` is what makes the URL worth having: the file is
       # uploaded as it is rather than zipped, so the link reaches the
@@ -922,93 +924,194 @@ runs:
         retention-days: ${{ inputs.results_retention_days }}
     - name: Publish recording 2
       id: recording2
-      # One upload per recording, unrolled. A composite action cannot loop a
-      # `uses:` step, and how many promises broke is not known until the run
-      # has finished -- so the number of addresses a run can hand out is
-      # fixed here, and pinned against the CLI's own cap
-      # (MAX_PUBLISHED_RECORDINGS in python/src/seal/seal.py) by a test.
-      #
-      # `archive: false` is what makes the URL worth having: the file is
-      # uploaded as it is rather than zipped, so the link reaches the
-      # recording instead of an archive containing it. It also makes the
-      # artifact's name the file's name, which is why the staging step above
-      # renames each one after the promise it belongs to.
+      # One of the unrolled uploads 'Publish recording 1' describes.
       if: (!cancelled()) && steps.stage.outputs.path2 != ''
       uses: actions/upload-artifact@v7
       with:
         path: ${{ steps.stage.outputs.path2 }}
         archive: false
-        # A re-run of the same commit publishes the same names again, and an
-        # artifact name has to be unique within a run.
         overwrite: true
         retention-days: ${{ inputs.results_retention_days }}
     - name: Publish recording 3
       id: recording3
-      # One upload per recording, unrolled. A composite action cannot loop a
-      # `uses:` step, and how many promises broke is not known until the run
-      # has finished -- so the number of addresses a run can hand out is
-      # fixed here, and pinned against the CLI's own cap
-      # (MAX_PUBLISHED_RECORDINGS in python/src/seal/seal.py) by a test.
-      #
-      # `archive: false` is what makes the URL worth having: the file is
-      # uploaded as it is rather than zipped, so the link reaches the
-      # recording instead of an archive containing it. It also makes the
-      # artifact's name the file's name, which is why the staging step above
-      # renames each one after the promise it belongs to.
+      # One of the unrolled uploads 'Publish recording 1' describes.
       if: (!cancelled()) && steps.stage.outputs.path3 != ''
       uses: actions/upload-artifact@v7
       with:
         path: ${{ steps.stage.outputs.path3 }}
         archive: false
-        # A re-run of the same commit publishes the same names again, and an
-        # artifact name has to be unique within a run.
         overwrite: true
         retention-days: ${{ inputs.results_retention_days }}
     - name: Publish recording 4
       id: recording4
-      # One upload per recording, unrolled. A composite action cannot loop a
-      # `uses:` step, and how many promises broke is not known until the run
-      # has finished -- so the number of addresses a run can hand out is
-      # fixed here, and pinned against the CLI's own cap
-      # (MAX_PUBLISHED_RECORDINGS in python/src/seal/seal.py) by a test.
-      #
-      # `archive: false` is what makes the URL worth having: the file is
-      # uploaded as it is rather than zipped, so the link reaches the
-      # recording instead of an archive containing it. It also makes the
-      # artifact's name the file's name, which is why the staging step above
-      # renames each one after the promise it belongs to.
+      # One of the unrolled uploads 'Publish recording 1' describes.
       if: (!cancelled()) && steps.stage.outputs.path4 != ''
       uses: actions/upload-artifact@v7
       with:
         path: ${{ steps.stage.outputs.path4 }}
         archive: false
-        # A re-run of the same commit publishes the same names again, and an
-        # artifact name has to be unique within a run.
         overwrite: true
         retention-days: ${{ inputs.results_retention_days }}
     - name: Publish recording 5
       id: recording5
-      # One upload per recording, unrolled. A composite action cannot loop a
-      # `uses:` step, and how many promises broke is not known until the run
-      # has finished -- so the number of addresses a run can hand out is
-      # fixed here, and pinned against the CLI's own cap
-      # (MAX_PUBLISHED_RECORDINGS in python/src/seal/seal.py) by a test.
-      #
-      # `archive: false` is what makes the URL worth having: the file is
-      # uploaded as it is rather than zipped, so the link reaches the
-      # recording instead of an archive containing it. It also makes the
-      # artifact's name the file's name, which is why the staging step above
-      # renames each one after the promise it belongs to.
+      # One of the unrolled uploads 'Publish recording 1' describes.
       if: (!cancelled()) && steps.stage.outputs.path5 != ''
       uses: actions/upload-artifact@v7
       with:
         path: ${{ steps.stage.outputs.path5 }}
         archive: false
-        # A re-run of the same commit publishes the same names again, and an
-        # artifact name has to be unique within a run.
         overwrite: true
         retention-days: ${{ inputs.results_retention_days }}
-
+    - name: Publish recording 6
+      id: recording6
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path6 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path6 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 7
+      id: recording7
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path7 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path7 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 8
+      id: recording8
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path8 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path8 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 9
+      id: recording9
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path9 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path9 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 10
+      id: recording10
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path10 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path10 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 11
+      id: recording11
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path11 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path11 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 12
+      id: recording12
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path12 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path12 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 13
+      id: recording13
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path13 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path13 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 14
+      id: recording14
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path14 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path14 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 15
+      id: recording15
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path15 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path15 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 16
+      id: recording16
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path16 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path16 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 17
+      id: recording17
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path17 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path17 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 18
+      id: recording18
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path18 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path18 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 19
+      id: recording19
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path19 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path19 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
+    - name: Publish recording 20
+      id: recording20
+      # One of the unrolled uploads 'Publish recording 1' describes.
+      if: (!cancelled()) && steps.stage.outputs.path20 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ steps.stage.outputs.path20 }}
+        archive: false
+        overwrite: true
+        retention-days: ${{ inputs.results_retention_days }}
     - name: Say where each recording was published
       id: recordings
       # The uploads above each know their own URL and nothing else. This is
@@ -1024,7 +1127,22 @@ runs:
             {"key": "${{ steps.stage.outputs.key2 }}", "url": "${{ steps.recording2.outputs.artifact-url }}"},
             {"key": "${{ steps.stage.outputs.key3 }}", "url": "${{ steps.recording3.outputs.artifact-url }}"},
             {"key": "${{ steps.stage.outputs.key4 }}", "url": "${{ steps.recording4.outputs.artifact-url }}"},
-            {"key": "${{ steps.stage.outputs.key5 }}", "url": "${{ steps.recording5.outputs.artifact-url }}"}
+            {"key": "${{ steps.stage.outputs.key5 }}", "url": "${{ steps.recording5.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key6 }}", "url": "${{ steps.recording6.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key7 }}", "url": "${{ steps.recording7.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key8 }}", "url": "${{ steps.recording8.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key9 }}", "url": "${{ steps.recording9.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key10 }}", "url": "${{ steps.recording10.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key11 }}", "url": "${{ steps.recording11.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key12 }}", "url": "${{ steps.recording12.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key13 }}", "url": "${{ steps.recording13.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key14 }}", "url": "${{ steps.recording14.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key15 }}", "url": "${{ steps.recording15.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key16 }}", "url": "${{ steps.recording16.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key17 }}", "url": "${{ steps.recording17.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key18 }}", "url": "${{ steps.recording18.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key19 }}", "url": "${{ steps.recording19.outputs.artifact-url }}"},
+            {"key": "${{ steps.stage.outputs.key20 }}", "url": "${{ steps.recording20.outputs.artifact-url }}"}
           ]
       shell: bash
       run: |

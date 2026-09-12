@@ -202,7 +202,7 @@ discard a failure.
 Whatever recording a promise left is also published under an address of its
 own -- one unarchived artifact per promise, named after it, so a report can
 link the video instead of the archive holding it. A file inside an artifact
-has no URL; an artifact does. Broken promises first, five per run at most
+has no URL; an artifact does. Broken promises first, twenty per run at most
 (a composite action cannot loop an upload step), and `publish_recordings:
 false` turns it off.
 

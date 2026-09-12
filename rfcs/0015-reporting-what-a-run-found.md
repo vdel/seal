@@ -184,8 +184,12 @@ how many promises broke is not known until the run has finished, so the
 uploads are unrolled and there are five of them. The cap is pinned in two
 files at once, which is the kind of agreement that goes quietly wrong -- one
 step too many never runs, one too few publishes nothing and says nothing --
-so a test reads both. Five, because the number that matters is one: a branch
-where five promises broke is one somebody reads the whole report for.
+so a test reads both. Twenty, because a cap sized for the reviewer who
+wants to watch *the* failure would bind on almost every run and hand out its
+addresses arbitrarily: a project verifying a couple of shapes and keeping a
+handful of promises already produces more than a few recordings. A step
+whose recording the run didn't produce is skipped, so the unused ones cost a
+run nothing and only this file's length.
 
 **The bytes travel twice.** The recording stays in the results artifact as
 well, because that is where the page that plays it lives, and a page that

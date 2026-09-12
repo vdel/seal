@@ -395,12 +395,16 @@ MAX_RENDERED_EVIDENCE = 12
 # them rather than however many a run produced, and it is pinned against
 # the pipeline that declares them (python/tests/test_ci_action.py).
 #
-# Five, because the number that matters is one: a branch where five promises
-# broke is one somebody reads the whole report for, and the case this exists
-# to serve is the reviewer who wants to watch *the* failure without
-# downloading an archive to find it. Everything past the cap is still in the
-# results artifact, and the count of what was left out is reported.
-MAX_PUBLISHED_RECORDINGS = 5
+# High enough that reaching it is unusual rather than routine: a project
+# verifying a couple of shapes and keeping a handful of promises produces
+# more than a few recordings on a green run alone, so a cap sized for the
+# reviewer who wants to watch *the* failure would bind on almost every run
+# and hand out addresses arbitrarily. The cost of each one is a declared
+# upload in the pipeline and nothing at runtime, since an upload for a
+# recording a run did not produce is skipped. Everything past the cap is
+# still in the results artifact, and the count of what was left out is
+# reported.
+MAX_PUBLISHED_RECORDINGS = 20
 
 
 def cmd_tests_results(args: list[str]) -> int:
