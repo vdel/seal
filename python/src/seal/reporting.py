@@ -580,20 +580,40 @@ def _markdown_kept_recordings(
     Separate from the failures above rather than mixed in with them. What a
     reviewer needs is what broke; this is somebody checking that a suite
     exercises what they think it does, which is a different errand.
+
+    A recording that exists and was not published is counted rather than
+    dropped. There are only so many addresses a pipeline can hand out, so
+    the ones that miss out would otherwise be absent from a list of links --
+    and a reader comparing "three promises held" against two links cannot
+    tell a promise that recorded nothing from one whose recording nobody
+    gave an address to.
     """
-    kept = [
-        (promise, recordings[recording_key(run_name, promise.get("slug", ""))])
+    recorded = [
+        promise
         for promise in promises(run)
         if promise.get("state") == PASSED
-        and recording_key(run_name, promise.get("slug", "")) in recordings
+        and any(
+            item.get("kind") in PUBLISHED_KINDS
+            for item in promise.get("evidence", [])
+        )
     ]
-    if not kept:
+    if not recorded:
         return []
+
+    published = [
+        (promise, recordings[recording_key(run_name, promise.get("slug", ""))])
+        for promise in recorded
+        if recording_key(run_name, promise.get("slug", "")) in recordings
+    ]
     lines = ["**Watch the promises that held**", ""]
-    for promise, url in kept[:MAX_LISTED_PROMISES]:
+    for promise, url in published[:MAX_LISTED_PROMISES]:
         lines.append("- ▶ [{}]({})".format(promise.get("slug", ""), url))
-    if len(kept) > MAX_LISTED_PROMISES:
-        lines.append("- and {} more".format(len(kept) - MAX_LISTED_PROMISES))
+    elsewhere = len(recorded) - min(len(published), MAX_LISTED_PROMISES)
+    if elsewhere:
+        lines.append(
+            "- {} more recorded, with no address of their own -- the results "
+            "artifact holds every one, and its `index.html` plays them.".format(elsewhere)
+        )
     lines.append("")
     return lines
 

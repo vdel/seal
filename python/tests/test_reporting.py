@@ -964,3 +964,60 @@ def test_a_failures_recording_is_not_listed_again_under_the_ones_that_held(
 
     assert "watch this failure" in comment
     assert "Watch the promises that held" not in comment
+
+
+def test_a_recording_with_no_address_is_counted_rather_than_dropped(tmp_path, capsys):
+    """There are only so many addresses a pipeline can hand out. A promise
+    whose recording missed out would otherwise be absent from a list of
+    links -- and a reader comparing "three promises held" against two links
+    cannot tell a promise that recorded nothing from one nobody gave an
+    address to."""
+    tree(tmp_path)
+    for name in ("one", "two", "three"):
+        promise(
+            tmp_path, name, verdict=VERDICT_PASSED, recorded=("artifacts/x/video.webm",)
+        )
+    runs = {"dev": read(tmp_path, capsys)}
+
+    comment = reporting.render_markdown(
+        runs,
+        recordings={
+            "dev/ui/todo-list/one": "https://ci.invalid/a/1",
+            "dev/ui/todo-list/two": "https://ci.invalid/a/2",
+        },
+    )
+
+    assert comment.count("\u25b6 [") == 2
+    assert "1 more recorded, with no address of their own" in comment
+    # And it says where the one without an address actually is.
+    assert "results artifact" in comment
+
+
+def test_nothing_is_counted_where_every_recording_got_an_address(tmp_path, capsys):
+    """The ordinary case. A count of zero left out would read as a caveat
+    where there is none."""
+    tree(tmp_path)
+    promise(tmp_path, "one", verdict=VERDICT_PASSED, recorded=("artifacts/x/video.webm",))
+    runs = {"dev": read(tmp_path, capsys)}
+
+    comment = reporting.render_markdown(
+        runs, recordings={"dev/ui/todo-list/one": "https://ci.invalid/a/1"}
+    )
+
+    assert "more recorded" not in comment
+
+
+def test_a_kept_promise_that_recorded_nothing_is_not_counted_as_missing(tmp_path, capsys):
+    """The default, where no pass is recorded at all. There is nothing to
+    watch, so a line saying some recordings have no address would be
+    inventing them."""
+    tree(tmp_path)
+    promise(tmp_path, "one", verdict=VERDICT_PASSED)
+    promise(tmp_path, "two", verdict=VERDICT_PASSED, recorded=("artifacts/x/video.webm",))
+    runs = {"dev": read(tmp_path, capsys)}
+
+    comment = reporting.render_markdown(
+        runs, recordings={"dev/ui/todo-list/two": "https://ci.invalid/a/2"}
+    )
+
+    assert "more recorded" not in comment
